@@ -172,3 +172,47 @@ Implemented as `ignore_cols=None` meaning *every column whose name starts with
 `_`*, with an explicit tuple accepted as an override and `()` demanding a
 whole-row match. `()` is what the second half of this checkpoint uses, so the
 override is not speculative API — the checkpoint needs it.
+
+## Step 1.4 — Resolve the grain
+
+Measured on the full log before deciding (all four numbers from one Spark job):
+
+```
+source rows                                              31,788,324
+distinct (customer, article, t_dat, channel)             28,583,889
+distinct (customer, article, t_dat, channel, price)      28,813,419
+groups with >1 distinct price                               223,068  (0.78%)
+max distinct prices inside one group                              8
+distinct price values                                         9,857
+distinct price values cast to DECIMAL(10,8)                   9,857
+price range                          1.694915254237288e-05 .. 0.5915254237288136
+```
+
+**Chosen: option (b), price OUT of the key.** Grain
+`(customer_id, article_id, t_dat, sales_channel_id)`, 28,583,889 rows.
+
+**Multi-quantity purchase rate = 10.08%** (3,204,435 of 31,788,324 source rows
+collapse). With price kept in the key it would have been 9.36% — the gap between
+those two, 229,530 rows, is the mid-day-markdown population.
+
+Reasoning recorded because the doc leaves this decision open: a markdown does not
+make a second basket line, and carving 0.78% of groups into extra rows to
+preserve a price difference is a modeling artifact rather than a business
+distinction. `fact_transaction` instead carries `price_mean = sum(price)/qty`,
+`price_min`, `price_max` (so the markdown stays visible) and
+`revenue = sum(price)`. Note `revenue = sum(price)` is exact and identical to
+`qty * price_mean`, so nothing is lost even in the multi-price groups — this is
+strictly better than the doc's "accept the loss" framing of the mean-price
+variant.
+
+**On the `DECIMAL(10,8)` advice:** with price out of the key it stops mattering,
+exactly as the doc predicts. Measured anyway, since it is cheap and the doc gives
+no number: all 9,857 distinct prices survive the cast without collision, so the
+`DECIMAL(10,8)` recommendation would have been safe. Worth knowing that 8 decimal
+places is *not* obviously enough by inspection — the raw values carry ~18
+significant digits (`0.050830508474576264`) — and the reason it works is that the
+underlying price grid is coarse: 9,857 values over a 4-decade range.
+
+**Checkpoint** (count query proving grain uniqueness) is discharged jointly with
+step 1.5: `fact_transaction` materializes at 28,583,889 rows, equal to the
+distinct-key count above, and the dbt uniqueness test on the grain runs green.
