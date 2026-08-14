@@ -119,7 +119,15 @@ def read_customers_csv(spark: SparkSession) -> DataFrame:
 
 
 def load_transactions(spark: SparkSession, start=None, end=None) -> None:
-    """Replace whole days in the target table. Safe to re-run."""
+    """
+    Replace whole days in the target table. Safe to re-run.
+
+    This is a FULL-DAY REFRESH from the source of truth, not a merge:
+    overwritePartitions() replaces every partition present in the incoming
+    DataFrame wholesale, so feeding it a delta for a day DELETES that day's
+    other rows. Applying deltas (late-arriving data) is week 9's job and needs
+    a different mechanism -- see docs/IMPLEMENTATION.md step 9.1.
+    """
     df = read_transactions_csv(spark, start=start, end=end)
     df.writeTo(TRANSACTIONS_TABLE).overwritePartitions()
 

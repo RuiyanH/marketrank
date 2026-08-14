@@ -72,3 +72,17 @@ and `customers` are created by `createOrReplace()` in their loaders, which owns
 their schema. That is deliberate — §0's problem #1 is a table and a `CREATE TABLE`
 statement drifting apart, and the cheapest way to not have that problem for a
 snapshot-replaced table is to not have a second declaration of its schema.
+
+## Step 1.2 — Decide the write strategy, deliberately
+
+No checkpoint; the step is a comment and a decision.
+
+**Think-first answer, confirmed by reading the code path rather than guessing:**
+`writeTo(...).overwritePartitions()` is Spark's dynamic partition overwrite, so a
+corrections file containing 3 rows for `2019-06-01` leaves exactly 3 rows in that
+partition. The doc is right. Nothing to run here — the same fact is *demonstrated*
+in step 9.1, and that is where the number goes.
+
+Recorded so week 9 does not have to re-derive it: the mechanism the merge case
+needs is a key, and the raw transaction rows have none. That is what step 1.4 is
+for.
