@@ -1,0 +1,26 @@
+.venv/
+__pycache__/
+*.py[cod]
+.DS_Store
+.ipynb_checkpoints/
+
+# Data is never committed — see README for how to fetch it.
+data/
+!data/.gitkeep
+
+# Iceberg tables — these are data, not source.
+warehouse/
+
+# Spark local artifacts (created in the working directory at runtime)
+spark-warehouse/
+metastore_db/
+derby.log
+
+# Editable-install build metadata
+*.egg-info/
+
+# Generated artifacts
+reports/*.png
+reports/*.html
+wandb/
+mlruns/
