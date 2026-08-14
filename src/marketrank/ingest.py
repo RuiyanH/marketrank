@@ -73,11 +73,21 @@ def create_tables(spark: SparkSession) -> None:
             customer_id       STRING,
             article_id        STRING,
             price             DOUBLE,
-            sales_channel_id  INT
+            sales_channel_id  INT,
+            _ingested_at      TIMESTAMP
         )
         USING iceberg
         PARTITIONED BY (days(t_dat))
     """)
+    # Bring a table created before step 1.3 up to the DDL above. Iceberg
+    # schema evolution is metadata-only: the column gets a new field id, and
+    # data files written without it read back as null. Nothing is rewritten.
+    # (Hive-style tables resolve columns by position, which is why the same
+    # operation there is a rewrite or a corruption.)
+    if "_ingested_at" not in spark.table(TRANSACTIONS_TABLE).columns:
+        spark.sql(
+            f"ALTER TABLE {TRANSACTIONS_TABLE} ADD COLUMN _ingested_at TIMESTAMP"
+        )
 
 def read_transactions_csv(spark: SparkSession, start=None, end=None) -> DataFrame:
     """Read the raw CSV with a declared schema, optionally limited to a date range."""
@@ -127,8 +137,13 @@ def load_transactions(spark: SparkSession, start=None, end=None) -> None:
     DataFrame wholesale, so feeding it a delta for a day DELETES that day's
     other rows. Applying deltas (late-arriving data) is week 9's job and needs
     a different mechanism -- see docs/IMPLEMENTATION.md step 9.1.
+
+    _ingested_at records when a row LANDED, which is not when the event
+    happened. It is pipeline metadata, so checks.assert_identical excludes it
+    by default -- idempotency is a claim about business content, not bytes.
     """
     df = read_transactions_csv(spark, start=start, end=end)
+    df = df.withColumn("_ingested_at", F.current_timestamp())
     df.writeTo(TRANSACTIONS_TABLE).overwritePartitions()
 
 

@@ -86,3 +86,89 @@ in step 9.1, and that is where the number goes.
 Recorded so week 9 does not have to re-derive it: the mechanism the merge case
 needs is a key, and the raw transaction rows have none. That is what step 1.4 is
 for.
+
+## Step 1.3 — `_ingested_at`, using schema evolution for real
+
+Note on §0's problem #1 (`promo_flag`): it does not exist in this build. The
+divergence between `create_tables()` and the live table came from the warehouse
+having been evolved by hand; a warehouse rebuilt from the committed DDL simply
+does not have the column. So `_ingested_at` is the *first* schema evolution here,
+and it is the one with a reason. If you are redoing this on the existing
+warehouse, drop `promo_flag` in the same commit.
+
+**Base load, for the record** (fresh warehouse, full `transactions_train.csv`):
+
+```
+TXN_LOAD_SECONDS 49.3
+TXN_COUNT        31,788,324
+TXN_SPAN         2018-09-20 .. 2020-09-22   DAYS 734
+warehouse size after load: 559 MB
+```
+
+31.79M is the number to use wherever the spec writes "~32M".
+
+### VERIFY — what `overwritePartitions()` does when the DataFrame lacks a column
+
+The doc asks whether Iceberg fills null or refuses. **It refuses**, at analysis
+time, before any work:
+
+```
+AnalysisException [INCOMPATIBLE_DATA_FOR_TABLE.CANNOT_FIND_DATA]
+Cannot write incompatible data for the table `local`.`raw`.`transactions`:
+Cannot find data for the output column `_ingested_at`.
+```
+
+Worth stating as two directions rather than one rule, because they differ:
+
+- **Read-side drift is tolerated.** Data files written before the column existed
+  read back as null — that is the metadata-only evolution working.
+- **Write-side drift is rejected.** `DataFrameWriterV2` resolves the incoming
+  DataFrame against the *current* table schema by name and fails on a missing
+  column. Producer and table drifting apart is a loud failure at write, not a
+  silent column of nulls.
+
+That asymmetry is the actual answer to "what happens when the producer and the
+table drift apart", and it is a better one than the doc's either/or implies.
+
+### Evidence the evolution was free
+
+`transactions.snapshots` after the ALTER contains **3** snapshots — the initial
+load and the two step-1.3 day reloads. The ALTER produced a
+`metadata_log_entries` row at `23:11:39.998` and **no snapshot at all**, and
+`latest_schema_id` went 0 → 1 only at the next write. No data files were touched:
+
+```
+snapshot_id          committed_at              operation  added      total
+2968744110833297794  2026-08-14 23:10:28.944   overwrite  31788324   31788324
+4827918704589656546  2026-08-14 23:12:39.522   overwrite  62619      31788324
+5931284054021401369  2026-08-14 23:12:56.625   overwrite  62619      31788324
+```
+
+### Checkpoint — both facts, together
+
+Day used: `2019-06-01` (62,619 rows), loaded twice back to back.
+
+```
+distinct _ingested_at, run a: 2026-08-14 19:12:21.582137
+distinct _ingested_at, run b: 2026-08-14 19:12:41.626972
+assert_identical(a, b)                -> ignored ['_ingested_at']; 0 / 0; IDENTICAL
+assert_identical(a, b, ignore_cols=()) -> 62619 / 62619; AssertionError
+rows still NULL in _ingested_at elsewhere: 31,725,705 of 31,788,324
+```
+
+31,725,705 + 62,619 = 31,788,324, so exactly the reloaded day carries a
+timestamp. **PASS**, both halves.
+
+### Deviation — `assert_identical`'s default
+
+The doc specifies `assert_identical(a, b, ignore_cols=("_ingested_at",))`, but
+its own prose asks for "anything else you later add with a leading underscore"
+and for a rule rather than a hardcoded column name. Those two are in tension:
+week 9 adds `_source_file`, and with the literal default in place `assert_identical`
+would go red the first time a corrections batch lands, for a reason that has
+nothing to do with idempotency.
+
+Implemented as `ignore_cols=None` meaning *every column whose name starts with
+`_`*, with an explicit tuple accepted as an override and `()` demanding a
+whole-row match. `()` is what the second half of this checkpoint uses, so the
+override is not speculative API — the checkpoint needs it.
