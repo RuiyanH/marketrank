@@ -1,8 +1,17 @@
 # Runbook — Bring `marketrank` up on Yale misha (HPC)
 
+**Status:** NOT YET EXECUTED — deferred to **Week 4** (decided 2026-08-14).
+Weeks 1–3 run on the laptop: ~18 GB free is enough for the data layer's <5 GB footprint, and the
+local REPL loop is faster and needs no VPN. Week 4's candidate generation needs 40–160 GB, which
+is the trigger to move. Run this then, or earlier if local disk gets tight.
+
 **Audience:** an agent (or a human) with a shell on `misha.ycrc.yale.edu`.
 **Goal:** the Iceberg data layer running on misha, with the repo working *unchanged* on both laptop and cluster.
 **Estimated time:** 30–45 min, most of it the Kaggle download.
+
+**Recon date: 2026-08-14.** Everything in the facts table below was verified by hand that day.
+Re-verify only quotas and free space — those drift. The rest (module names, paths, node specs,
+partition limits) is stable cluster configuration.
 
 Execute phases in order. Each phase ends with a **CHECKPOINT** stating the expected result.
 **If a checkpoint does not match, STOP and report — do not continue.**
@@ -134,11 +143,30 @@ module load Java/17.0.4
 export MARKETRANK_DATA_RAW="$HOME/project/marketrank/data/raw"
 export MARKETRANK_WAREHOUSE="$HOME/project/marketrank/warehouse"
 export MARKETRANK_SPARK_TMP="${TMPDIR:-/tmp}/marketrank-spark"
+export SPARK_CONF_DIR="$HOME/marketrank/conf"
 source "$HOME/marketrank/.venv/bin/activate"
 ```
 
 `source env.misha.sh` at the start of every misha session and inside every Slurm job script.
 The laptop never sources it and keeps using `config.py`'s defaults.
+
+**On `SPARK_CONF_DIR`** — added 2026-08-14, owned by [`IMPLEMENTATION.md`](IMPLEMENTATION.md) step 1.5.
+`conf/spark-defaults.conf` holds the Iceberg jar coordinate and the catalog config, because
+dbt-spark's session method builds its *own* SparkSession and cannot receive them from
+`profiles.yml`. `get_spark()` reads the same file, so both consumers see one catalog definition.
+
+`config.py` sets this same value with `os.environ.setdefault`, so anything importing `marketrank`
+is already covered and the export here is deliberate redundancy — it costs a line and it means the
+variable is visible in the shell where you will be debugging. `setdefault` also means this export
+wins if the two ever disagree. What the export genuinely adds is **dbt**, which never imports
+`marketrank`: run `dbt` on misha without it and the session comes up with no `local` catalog.
+
+**If `conf/` does not exist when you run this**, step 1.5 hasn't landed yet — drop the line and
+Phase 5 still works, because `get_spark()` still carries the catalog config itself at that point.
+Do **not** move `spark.local.dir` (3b) into that file to "match" it: spill location is
+mode- and machine-dependent and stays in the builder by design, for the same reason the
+loopback bind-address workaround does. Engine-agnostic config goes in the file; runtime and
+topology config stays in `get_spark()`.
 
 **CHECKPOINT 3:**
 
@@ -217,15 +245,32 @@ Expect **31,788,324** rows.
 **CHECKPOINT 5b:** the load is idempotent — re-running changes nothing.
 
 ```python
-before = checks.snapshot_ids(spark, ingest.TRANSACTIONS_TABLE)
-a = checks.read_snapshot(spark, ingest.TRANSACTIONS_TABLE)
+TABLE = ingest.TRANSACTIONS_TABLE
+snap_a = checks.snapshot_ids(spark, TABLE)[-1]
 ingest.load_transactions(spark, "2019-01-01", "2019-01-31")
-b = checks.read_snapshot(spark, ingest.TRANSACTIONS_TABLE)
+snap_b = checks.snapshot_ids(spark, TABLE)[-1]
+
+a = checks.read_snapshot(spark, TABLE, snap_a)
+b = checks.read_snapshot(spark, TABLE, snap_b)
 checks.assert_identical(a, b)
 ```
 
 `assert_identical` must pass. It uses `exceptAll` in **both** directions — duplicate-preserving,
 unlike `EXCEPT`, so a row appearing twice where it should appear once is still caught.
+
+**Both reads must pin an explicit snapshot id** (corrected 2026-08-14). Reading the table without
+one and holding the DataFrame across the reload does not capture a "before" — Spark DataFrames are
+lazy, so an unpinned read is resolved when the action runs, and both sides can end up scanning the
+same post-reload state. The check then passes by comparing the table to itself, which is the worst
+possible outcome for a test whose whole job is to fail when the load isn't idempotent. Capture the
+ids first; read afterwards.
+
+**Signatures** (owned by [`IMPLEMENTATION.md`](IMPLEMENTATION.md) steps 1.3 and 1.6): `read_snapshot(spark, table, snapshot_id)`
+and `assert_identical(a, b, ignore_cols=("_ingested_at",))`, taking two DataFrames. The current
+`checks.py` still has `assert_identical(spark, table, snap_a, snap_b)` — the refactor lands with
+step 1.3, which is also what makes `ignore_cols` necessary, since `_ingested_at` differs between
+two otherwise-identical loads. If you reach this phase before step 1.3, call the old four-argument
+form with the two ids and skip the two `read_snapshot` lines.
 
 Exit with `exit()`. **Do not leave the Spark session open** — an idle session holds its spill
 directory. On `/tmp` that is now harmless, but the habit matters.
@@ -289,5 +334,34 @@ python -m marketrank.jobs.backfill
   Expectations, and a second warehouse were each evaluated and cut for adding surface without
   adding a semantic.
 - **No multi-node Spark yet.** One node has 64 cores and 480 GiB. Whether multi-node is justified
-  is a **Week 2 decision made with a measured single-node wall-clock**, not an assumption. Running
+  is a decision made with a **measured single-node wall-clock**, not an assumption. Running
   distributed on a job that fits comfortably on one node is the manufactured-scale trap.
+
+---
+
+## Appendix D — Open items carried from the 2026-08-14 recon
+
+**1. How long does this account live?** Storage sits under the `dijk` *group* allocation, not a
+personal one, and the Stanford move ends the Yale affiliation at some point. Email
+`hpc@yale.edu` and ask for the expiry date. This changes more about sequencing than anything else
+in this document — if access ends before Week 8, the serving and evaluation layers need another
+home from the start.
+
+Mitigation already in place: code is in GitHub, and the warehouse is derived data rebuilt by
+re-running Phase 5 against Kaggle. Losing access costs a re-run, not an archaeology project.
+
+**2. The flagship must stay demoable.** "Deployed and pokeable" is one of the plan's deliverables,
+and nothing behind Yale's VPN is pokeable by a recruiter. Weeks 5–6's serving path should land
+somewhere public regardless of where training runs.
+
+**3. `pyproject.toml` declares no dependencies.** ~~Move the pins into `[project] dependencies`
+before Week 4.~~ **Superseded 2026-08-14** — this is now [`IMPLEMENTATION.md`](IMPLEMENTATION.md)
+step 1.0, pulled forward to Week 1 because the CI job in step 1.7 cannot pass without it: with no
+dependency block, `pip install -e .` installs nothing, `import pyspark` fails, and the
+point-in-time leakage test errors instead of running. Phase 1 of this runbook installs
+`pyspark==3.5.9` explicitly and so is unaffected either way.
+
+**4. Multi-node Spark on Slurm, if it turns out to be warranted.** Slurm does not run Spark
+natively. The pattern is: allocate N nodes, start a standalone master on the first, start workers
+on the rest, point `master=` at the master's URL. pip-installed pyspark ships the `sbin/` scripts
+for this. Do not attempt it before the single-node measurement justifies it.
