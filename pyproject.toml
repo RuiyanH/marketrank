@@ -3,9 +3,31 @@ name = "marketrank"
 version = "0.1.0"
 requires-python = ">=3.11"
 
+# pyspark is a hard dependency, not a dev extra: get_spark() is library code.
+# The version is pinned exactly because config.py's Iceberg runtime jar
+# coordinate (iceberg-spark-runtime-3.5_2.12) is built against Spark 3.5 /
+# Scala 2.12. A floating pyspark silently breaks that pairing and surfaces as
+# NoSuchMethodError at session construction (SETUP_MISHA.md Appendix B).
+dependencies = [
+    "pyspark==3.5.9",
+]
+
+[project.optional-dependencies]
+# CI and the laptop install ".[dev]"; misha installs "." (no dbt, no pytest).
+dev = [
+    "dbt-spark[session]",
+    "dbt-duckdb",
+    "pytest",
+]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+markers = [
+    "spark: test needs a local Spark session (slow, JVM startup)",
+]
