@@ -3,9 +3,9 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-DATA_RAW = PROJECT_ROOT / "data" / "raw"
-WAREHOUSE = PROJECT_ROOT / "warehouse"
-REPORTS = PROJECT_ROOT / "reports"
+DATA_RAW = Path(os.environ.get("MARKETRANK_DATA_RAW", PROJECT_ROOT / "data" / "raw"))
+WAREHOUSE = Path(os.environ.get("MARKETRANK_WAREHOUSE", PROJECT_ROOT / "warehouse"))
+REPORTS = Path(os.environ.get("MARKETRANK_REPORTS", PROJECT_ROOT / "reports"))
 
 os.environ.setdefault(
     "JAVA_HOME",
