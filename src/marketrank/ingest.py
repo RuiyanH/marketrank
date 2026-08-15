@@ -64,11 +64,20 @@ CUSTOMERS_SCHEMA = StructType([
 CUSTOMERS_TABLE = f"{config.CATALOG}.raw.customers"
 
 
-def create_tables(spark: SparkSession) -> None:
-    """Create the namespace and raw tables. Safe to re-run."""
-    spark.sql(f"CREATE NAMESPACE IF NOT EXISTS {config.CATALOG}.raw")
+def create_transactions_table(
+    spark: SparkSession, table: str = TRANSACTIONS_TABLE
+) -> None:
+    """
+    Create one transactions-shaped Iceberg table. Safe to re-run.
+
+    Parameterised on the table name so tests can drive the real write path
+    against a throwaway table instead of the warehouse -- see
+    tests/test_iceberg.py.
+    """
+    namespace = table.rsplit(".", 1)[0]
+    spark.sql(f"CREATE NAMESPACE IF NOT EXISTS {namespace}")
     spark.sql(f"""
-        CREATE TABLE IF NOT EXISTS {TRANSACTIONS_TABLE} (
+        CREATE TABLE IF NOT EXISTS {table} (
             t_dat             DATE,
             customer_id       STRING,
             article_id        STRING,
@@ -84,10 +93,13 @@ def create_tables(spark: SparkSession) -> None:
     # data files written without it read back as null. Nothing is rewritten.
     # (Hive-style tables resolve columns by position, which is why the same
     # operation there is a rewrite or a corruption.)
-    if "_ingested_at" not in spark.table(TRANSACTIONS_TABLE).columns:
-        spark.sql(
-            f"ALTER TABLE {TRANSACTIONS_TABLE} ADD COLUMN _ingested_at TIMESTAMP"
-        )
+    if "_ingested_at" not in spark.table(table).columns:
+        spark.sql(f"ALTER TABLE {table} ADD COLUMN _ingested_at TIMESTAMP")
+
+
+def create_tables(spark: SparkSession) -> None:
+    """Create the namespace and all three raw tables. Safe to re-run."""
+    create_transactions_table(spark, TRANSACTIONS_TABLE)
 
 def read_transactions_csv(spark: SparkSession, start=None, end=None) -> DataFrame:
     """Read the raw CSV with a declared schema, optionally limited to a date range."""
@@ -128,7 +140,9 @@ def read_customers_csv(spark: SparkSession) -> DataFrame:
     )
 
 
-def load_transactions(spark: SparkSession, start=None, end=None) -> None:
+def load_transactions(
+    spark: SparkSession, start=None, end=None, table: str = TRANSACTIONS_TABLE
+) -> None:
     """
     Replace whole days in the target table. Safe to re-run.
 
@@ -144,7 +158,7 @@ def load_transactions(spark: SparkSession, start=None, end=None) -> None:
     """
     df = read_transactions_csv(spark, start=start, end=end)
     df = df.withColumn("_ingested_at", F.current_timestamp())
-    df.writeTo(TRANSACTIONS_TABLE).overwritePartitions()
+    df.writeTo(table).overwritePartitions()
 
 
 def load_articles(spark: SparkSession) -> None:
@@ -172,3 +186,39 @@ def load_customers(spark: SparkSession) -> None:
 
 
 
+
+
+def load_all(spark: SparkSession) -> None:
+    """Create the raw tables and load all three from the CSV extracts."""
+    create_tables(spark)
+    load_transactions(spark)
+    load_articles(spark)
+    load_customers(spark)
+
+
+if __name__ == "__main__":
+    from marketrank.spark import get_spark
+
+    _spark = get_spark("ingest")
+    load_all(_spark)
+    for _t in (TRANSACTIONS_TABLE, ARTICLES_TABLE, CUSTOMERS_TABLE):
+        print(_t, _spark.table(_t).count())
+    _spark.stop()
+
+
+def load_all(spark: SparkSession) -> None:
+    """Create the raw tables and load all three from the CSV extracts."""
+    create_tables(spark)
+    load_transactions(spark)
+    load_articles(spark)
+    load_customers(spark)
+
+
+if __name__ == "__main__":
+    from marketrank.spark import get_spark
+
+    _spark = get_spark("ingest")
+    load_all(_spark)
+    for _t in (TRANSACTIONS_TABLE, ARTICLES_TABLE, CUSTOMERS_TABLE):
+        print(_t, _spark.table(_t).count())
+    _spark.stop()

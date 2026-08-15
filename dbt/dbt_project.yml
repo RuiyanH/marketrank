@@ -1,0 +1,63 @@
+name: marketrank
+version: "0.1.0"
+config-version: 2
+
+profile: marketrank
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  marketrank:
+    staging:
+      +schema: staging
+      # NOT views. Iceberg's SparkCatalog does not implement ViewCatalog, so a
+      # `create or replace view` in the `local` catalog fails outright with
+      # "Replacing a view is not supported by catalog: local" -- verified, see
+      # BUILD_NOTES step 1.5. Staging here is pure projection (rename + cast,
+      # no business logic), so inlining it as a CTE stores nothing, costs
+      # nothing, and -- unlike materialising as a table on Spark and a view on
+      # DuckDB -- keeps dev and CI running the *same* thing.
+      +materialized: ephemeral
+    marts:
+      +schema: marts
+      +materialized: table
+
+seeds:
+  marketrank:
+    +schema: raw_seed
+    # Seeds exist so CI can run the model without the 3.5 GB CSV. On the Spark
+    # target the real Iceberg tables are the source, so the seeds are dead
+    # weight -- and dbt-spark emits an unsized `varchar` for them, which Spark
+    # rejects with DATATYPE_MISSING_SIZE.
+    +enabled: "{{ target.type == 'duckdb' }}"
+    # article_id and customer_id are zero-padded / hex strings. Left to
+    # inference, DuckDB reads `0108775015` as an integer and the leading zero
+    # is gone -- which silently breaks the relationships tests between the fact
+    # and the dimensions. Declare, never infer. Same rule as the Spark reads.
+    seed_transactions:
+      +column_types:
+        t_dat: date
+        customer_id: varchar
+        article_id: varchar
+        price: double
+        sales_channel_id: integer
+    seed_articles:
+      +column_types:
+        article_id: varchar
+        product_type_no: integer
+        colour_group_code: integer
+        department_no: integer
+        index_group_no: integer
+        garment_group_no: integer
+    seed_customers:
+      +column_types:
+        customer_id: varchar
+        FN: double
+        Active: double
+        age: integer

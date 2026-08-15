@@ -1,0 +1,51 @@
+version: 2
+
+models:
+  - name: dim_article
+    description: One row per article. Current-state snapshot, not point-in-time.
+    columns:
+      - name: article_id
+        description: Zero-padded string. Never inferred.
+        data_tests:
+          - unique
+          - not_null
+
+  - name: dim_customer
+    description: One row per customer. Current-state snapshot, not point-in-time.
+    columns:
+      - name: customer_id
+        data_tests:
+          - unique
+          - not_null
+      - name: age
+        description: Nullable, and the nulls are real. No test asserting otherwise.
+
+  - name: fact_transaction
+    description: >
+      One row per basket line -- (customer, article, day, channel) -- with qty.
+      Uniqueness on the composite grain is asserted by the singular test
+      tests/assert_fact_transaction_grain_unique.sql.
+    columns:
+      - name: customer_id
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('dim_customer')
+              field: customer_id
+      - name: article_id
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('dim_article')
+              field: article_id
+      - name: transaction_date
+        data_tests:
+          - not_null
+      - name: sales_channel_id
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: [1, 2]
+      - name: qty
+        data_tests:
+          - not_null

@@ -1,0 +1,31 @@
+# Engine-agnostic Spark configuration: which catalog exists, which jar
+# implements it, what timezone. Rendered to spark-defaults.conf in the same
+# directory by marketrank.config at import time -- see the note below.
+#
+# TWO consumers read the rendered file and they are disjoint:
+#   * get_spark(), and anything that imports marketrank (pytest, notebooks,
+#     a REPL), via SPARK_CONF_DIR which config.py sets with os.environ.setdefault
+#   * dbt, which never imports marketrank, via the Makefile's export
+#
+# dbt-spark's "session" method builds its OWN SparkSession inside dbt's process,
+# so the Iceberg jar coordinate and the catalog definition have to exist at
+# session-construction time. This file is how both consumers get one definition.
+#
+# Runtime and topology configuration -- driver bind address, spill directory,
+# driver memory, master -- deliberately does NOT live here. It is machine- and
+# mode-dependent and stays in get_spark(), where it can branch.
+#
+# WHY THIS IS A TEMPLATE: the warehouse location is environment-dependent
+# (MARKETRANK_WAREHOUSE; env.misha.sh sets a different one), and Spark does NOT
+# interpolate environment variables in spark-defaults.conf -- a literal
+# ${{env:MARKETRANK_WAREHOUSE}} is read as a relative path and the catalog fails
+# with "Relative path in absolute URI". Verified, see BUILD_NOTES step 1.5.
+# (Braces are doubled above because this file is rendered with str.format.)
+
+spark.jars.packages                 org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:{iceberg_version}
+spark.sql.extensions                org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
+spark.sql.catalog.{catalog}         org.apache.iceberg.spark.SparkCatalog
+spark.sql.catalog.{catalog}.type    hadoop
+spark.sql.catalog.{catalog}.warehouse {warehouse}
+spark.sql.defaultCatalog            {catalog}
+spark.sql.session.timeZone          UTC

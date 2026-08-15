@@ -1,0 +1,56 @@
+name: ci
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      # config.py sets this with os.environ.setdefault, so `pytest` is already
+      # covered. It is exported here because dbt never imports marketrank --
+      # harmless for the `ci` target, which is DuckDB, and correct the moment a
+      # Spark-target dbt step is added.
+      SPARK_CONF_DIR: ${{ github.workspace }}/conf
+      # Runner hostnames resolve, so this is belt-and-braces rather than the
+      # laptop's stale-DHCP workaround. It costs nothing and it is the failure
+      # that is hardest to read from a CI log.
+      SPARK_LOCAL_IP: 127.0.0.1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Without a JDK the Spark tests fail differently and more confusingly than
+      # they would for any reason in our own code.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # ".[dev]" and not ".": before the dependency block landed (step 1.0),
+      # `pip install -e .` installed nothing, `import pyspark` failed, and the
+      # PIT test errored instead of running.
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      # The dimensional model and its tests, on DuckDB, over committed seeds.
+      # No warehouse and no 3.5 GB CSV involved.
+      - name: dbt build (DuckDB / seeds)
+        working-directory: dbt
+        env:
+          DBT_PROFILES_DIR: ${{ github.workspace }}/dbt
+        run: dbt build --target ci
+
+      # The Spark tests are NOT skipped. Gate 1's criterion is the PIT leakage
+      # test, so a job that collects and skips it is not enforcing the gate --
+      # it just looks like it is. ~2-3 min of JVM startup on a job that would
+      # otherwise take 40 seconds is the price of the gate being enforced by the
+      # machine rather than by discipline.
+      - name: pytest (includes the Spark and PIT tests)
+        run: pytest -v

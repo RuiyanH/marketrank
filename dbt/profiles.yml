@@ -1,0 +1,26 @@
+# Committed on purpose: a local Hadoop-catalog lakehouse and an in-process
+# DuckDB file have no secrets in them.
+#
+# dev  -- dbt-spark's `session` method. It builds its OWN SparkSession inside
+#         dbt's process, so the Iceberg jar and the `local` catalog cannot be
+#         handed to it from here; they come from conf/spark-defaults.conf via
+#         SPARK_CONF_DIR, which the Makefile exports and config.py sets.
+# ci   -- the same models and the same tests on DuckDB over committed seeds.
+#         It proves the dimensional model and its tests. It does NOT prove the
+#         Iceberg write path or any incremental strategy; those are Spark-only
+#         and the pytest suite covers them.
+marketrank:
+  target: dev
+  outputs:
+    dev:
+      type: spark
+      method: session
+      host: localhost
+      schema: marts
+      threads: 1
+
+    ci:
+      type: duckdb
+      path: "{{ env_var('MARKETRANK_CI_DB', 'target/ci.duckdb') }}"
+      schema: main
+      threads: 4

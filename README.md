@@ -71,3 +71,33 @@ equals `qty * price_mean` regardless of within-group price variation. Keeping
 `price` out of the key also removes the float-key fragility entirely; for the
 record, it would have been safe here anyway, since all 9,857 distinct prices
 survive a cast to `DECIMAL(10,8)` without collision.
+
+### The modeling layer
+
+```
+local.raw.transactions   Iceberg, partitioned by days(t_dat), 734 days
+local.raw.articles       Iceberg, unpartitioned snapshot
+local.raw.customers      Iceberg, unpartitioned snapshot
+   |  dbt
+   v
+staging.stg_*            ephemeral (rename + cast, no business logic)
+   |
+   v
+local.marts.fact_transaction / dim_article / dim_customer   Iceberg tables
+```
+
+Staging models are **ephemeral**, not views: Iceberg's `SparkCatalog` does not
+implement `ViewCatalog`, so `create or replace view` inside the `local` catalog
+fails with *"Replacing a view is not supported by catalog: local"*. Since staging
+here is pure projection, inlining it as a CTE stores nothing and keeps the dev
+and CI targets running the same thing.
+
+### What CI actually proves
+
+CI runs the dimensional model and its tests against fixture data on DuckDB, plus
+the Iceberg idempotency tests and the point-in-time leakage test against a local
+Spark session, on every PR. The **incremental and Iceberg write paths are
+exercised locally against the real warehouse**, not in CI — CI has a JVM but no
+data, so the seeds stand in for the 3.5 GB extract.
+
+That is the precise claim. "My pipeline is tested in CI" is not.
