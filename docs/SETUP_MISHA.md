@@ -341,14 +341,22 @@ python -m marketrank.jobs.backfill
 
 ## Appendix D — Open items carried from the 2026-08-14 recon
 
-**1. How long does this account live?** Storage sits under the `dijk` *group* allocation, not a
-personal one, and the Stanford move ends the Yale affiliation at some point. Email
-`hpc@yale.edu` and ask for the expiry date. This changes more about sequencing than anything else
-in this document — if access ends before Week 8, the serving and evaluation layers need another
-home from the start.
+**1. ~~How long does this account live?~~ RESOLVED 2026-08-15 — access runs through ~2027-08.**
+Storage sits under the `dijk` *group* allocation, not a personal one, and the Stanford move ends
+the Yale affiliation eventually — but not for another year. The whole 10-week build finishes with
+roughly nine months of margin, so **this is no longer a sequencing constraint**: weeks 4–8 can all
+assume misha, and the serving path can be planned on its merits rather than around an expiry date.
 
-Mitigation already in place: code is in GitHub, and the warehouse is derived data rebuilt by
-re-running Phase 5 against Kaggle. Losing access costs a re-run, not an archaeology project.
+Two things this does *not* resolve, so don't let the margin turn into complacency:
+
+- Item 2 below still stands on its own — a demo behind Yale's VPN is not demoable to a recruiter
+  regardless of how long the account lives.
+- Re-confirm before any work lands after ~2027-05. A year of margin quietly becomes three months,
+  and group allocations can change ahead of the affiliation ending.
+
+Mitigation already in place either way: code is in GitHub, and the warehouse is derived data
+rebuilt by re-running Phase 5 against Kaggle. Losing access costs a re-run, not an archaeology
+project.
 
 **2. The flagship must stay demoable.** "Deployed and pokeable" is one of the plan's deliverables,
 and nothing behind Yale's VPN is pokeable by a recruiter. Weeks 5–6's serving path should land
