@@ -29,3 +29,7 @@ spark.sql.catalog.{catalog}.type    hadoop
 spark.sql.catalog.{catalog}.warehouse {warehouse}
 spark.sql.defaultCatalog            {catalog}
 spark.sql.session.timeZone          UTC
+
+# Display only. The console progress bar interleaves carriage returns into any
+# piped log and makes captured runs unreadable.
+spark.ui.showConsoleProgress        false

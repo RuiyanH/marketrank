@@ -30,7 +30,11 @@ signal and that tradeoff is stated in the README.
 
 from __future__ import annotations
 
-from pyspark.sql import Column, DataFrame, Window, functions as F
+from datetime import date, timedelta
+
+from pyspark.sql import Column, DataFrame, SparkSession, Window, functions as F
+
+from marketrank import config
 
 # Day 0 of the dataset. One integer per calendar day, and the thing the window
 # frame orders on.
@@ -38,6 +42,26 @@ DAY_ZERO = "2018-09-20"
 
 WINDOWS = (7, 30, 90)
 MAX_WINDOW = max(WINDOWS)
+
+# Money is DECIMAL, not DOUBLE, and this is not a style choice -- it is what
+# makes the step 2.4 backfill checkpoint pass.
+#
+# Floating-point addition is not associative, and the summation order inside a
+# hash aggregate depends on how the input was partitioned. A full build reads
+# 734 days and a backfill reads 120, so the two runs split the input
+# differently, sum the same prices in a different order, and produce `spend`
+# values that differ in the last bit. Measured on this dataset: identical
+# integer counts, but 23,758 of 469,829 customer-day rows differed in
+# cust_spend_90d, max |delta| = 1.78e-15. Nothing is *wrong* with either number
+# and every downstream model would be unaffected -- but "recompute a window and
+# diff it against the full run" then fails forever, and the check that was
+# supposed to catch the truncation trap gets disabled as noisy.
+#
+# Decimal addition is exact and therefore order-independent. price has 9,857
+# distinct values in [1.69e-05, 0.5915] and all of them survive DECIMAL(10,8)
+# without collision (step 1.4), so 10 decimal places is comfortably lossless
+# for this column.
+PRICE_TYPE = "decimal(12,10)"
 
 
 def day_index(col: str | Column) -> Column:
@@ -89,8 +113,8 @@ def daily_customer_agg(txn: DataFrame) -> DataFrame:
             # cheap alternative is close enough for a count feature. Named so
             # the difference is visible rather than assumed.
             F.countDistinct("article_id").alias("n_articles"),
-            F.sum("price").alias("spend"),
-            F.avg("price").alias("avg_price"),
+            F.sum(F.col("price").cast(PRICE_TYPE)).alias("spend"),
+            F.avg(F.col("price").cast(PRICE_TYPE)).alias("avg_price"),
         )
     )
 
@@ -103,8 +127,8 @@ def daily_article_agg(txn: DataFrame) -> DataFrame:
         .agg(
             F.count(F.lit(1)).alias("n_txn"),
             F.countDistinct("customer_id").alias("n_customers"),
-            F.sum("price").alias("spend"),
-            F.avg("price").alias("avg_price"),
+            F.sum(F.col("price").cast(PRICE_TYPE)).alias("spend"),
+            F.avg(F.col("price").cast(PRICE_TYPE)).alias("avg_price"),
         )
     )
 
@@ -165,8 +189,11 @@ def rolling_features(
             spine_keys.unionByName(daily_df.select(*keys))
             .distinct()
             .join(daily_df, on=keys, how="left")
-            .fillna(0, subset=list(measures))
         )
+        for m in measures:
+            base = base.withColumn(
+                m, F.coalesce(F.col(m), F.lit(0).cast(daily_df.schema[m].dataType))
+            )
 
     out = base.select(*keys, *measures)
     generated: list[str] = []
@@ -178,7 +205,10 @@ def rolling_features(
         )
         for m in measures:
             name = f"{prefix}{m}_{w}d"
-            out = out.withColumn(name, F.coalesce(F.sum(m).over(frame), F.lit(0)))
+            summed = F.sum(m).over(frame)
+            out = out.withColumn(
+                name, F.coalesce(summed, F.lit(0).cast(out.schema[m].dataType))
+            )
             generated.append(name)
         # A derived measure that is only correct if computed from the two sums
         # over the SAME frame -- averaging an average would weight days equally
@@ -243,3 +273,107 @@ def cross_features(
         prefix="cross_",
         spine=spine,
     )
+
+
+# --------------------------------------------------------------------------
+# Step 2.4 -- persist and backfill
+# --------------------------------------------------------------------------
+
+FEATURE_NAMESPACE = f"{config.CATALOG}.features"
+CUSTOMER_FEATURE_TABLE = f"{FEATURE_NAMESPACE}.feature_customer_daily"
+ARTICLE_FEATURE_TABLE = f"{FEATURE_NAMESPACE}.feature_article_daily"
+CROSS_FEATURE_TABLE = f"{FEATURE_NAMESPACE}.feature_cross_daily"
+
+
+def _write_partitioned(df: DataFrame, table: str, spark: SparkSession) -> None:
+    """Partition-overwrite `table`, creating it partitioned by day on first use."""
+    exists = spark.catalog.tableExists(table)
+    writer = df.writeTo(table)
+    if exists:
+        writer.overwritePartitions()
+    else:
+        writer.partitionedBy(F.days("feature_date")).createOrReplace()
+
+
+def build_features(
+    spark: SparkSession,
+    start: str | None = None,
+    end: str | None = None,
+    windows: tuple[int, ...] = WINDOWS,
+) -> dict[str, int]:
+    """
+    Build (or backfill) the three daily feature tables for feature days
+    ``[start, end]``.
+
+    THE CONTRACT IS AN ASYMMETRY, and it is the whole function:
+
+        READ  source days [start - MAX_WINDOW, end]
+        WRITE feature days [start, end]
+
+    Filtering the daily aggregates to ``[start, end]`` *before* windowing is the
+    natural way to write this, it looks like an obvious optimisation, and it is
+    the **backfill-truncation trap**: every recomputed window is then truncated
+    at the left edge, so a backfilled day near ``start`` gets a 90-day feature
+    computed from three days of data. No error, no null, just a number that is
+    quietly wrong in a table that already passed its leakage tests.
+
+    Related contract, from the other direction: if source day ``D`` changes, day
+    ``D``'s own feature row is NOT invalid -- by the ``rangeBetween(-w, -1)``
+    rule it never saw day ``D``. The invalid range is ``[D + 1, D + 90]``.
+
+    One function does the full build and the backfill. A separate backfill
+    script is the anti-pattern; "recompute an arbitrary past window without a
+    bespoke script" means the parameter, not the script.
+    """
+    from marketrank import ingest
+
+    max_window = max(windows)
+    read_start = None
+    if start is not None:
+        read_start = (
+            date.fromisoformat(start) - timedelta(days=max_window)
+        ).isoformat()
+
+    txn = spark.table(ingest.TRANSACTIONS_TABLE)
+    if read_start is not None:
+        txn = txn.filter(F.col("t_dat") >= F.lit(read_start).cast("date"))
+    if end is not None:
+        txn = txn.filter(F.col("t_dat") <= F.lit(end).cast("date"))
+    articles = spark.table(ingest.ARTICLES_TABLE)
+
+    spark.sql(f"CREATE NAMESPACE IF NOT EXISTS {FEATURE_NAMESPACE}")
+
+    def clip(df: DataFrame) -> DataFrame:
+        if start is not None:
+            df = df.filter(F.col("feature_date") >= F.lit(start).cast("date"))
+        if end is not None:
+            df = df.filter(F.col("feature_date") <= F.lit(end).cast("date"))
+        return df
+
+    written: dict[str, int] = {}
+    for table, df in (
+        (CUSTOMER_FEATURE_TABLE, customer_features(txn, windows=windows)),
+        (ARTICLE_FEATURE_TABLE, article_features(txn, windows=windows)),
+        (CROSS_FEATURE_TABLE, cross_features(txn, articles, windows=windows)),
+    ):
+        out = clip(df)
+        _write_partitioned(out, table, spark)
+        written[table] = spark.table(table).count()
+    return written
+
+
+if __name__ == "__main__":  # `python -m marketrank.features [start end]`
+    import sys
+    import time
+
+    from marketrank.spark import get_spark
+
+    _start = sys.argv[1] if len(sys.argv) > 1 else None
+    _end = sys.argv[2] if len(sys.argv) > 2 else None
+    _spark = get_spark("build_features")
+    _t = time.time()
+    _res = build_features(_spark, start=_start, end=_end)
+    print("BUILD_SECONDS %.1f" % (time.time() - _t))
+    for _t_name, _n in _res.items():
+        print("TABLE_ROWS", _t_name, _n)
+    _spark.stop()

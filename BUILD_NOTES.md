@@ -563,3 +563,127 @@ repeated: test 1 catches the off-by-one and is blind to the global statistic;
 test 2 catches the global statistic. Neither test alone is the gate — the pair
 is. Run this mutation check yourself when you re-implement; it takes two minutes
 and it is the only evidence that the gate is a gate.
+
+## Step 2.4 — Persist, split, backfill
+
+Split constants live in `src/marketrank/splits.py`, exactly the doc's six slices,
+with a `CONSUMED_BY` map next to them so a later week cannot quietly borrow
+`ope_env`.
+
+### Full build
+
+```
+FULL_BUILD_SECONDS 367.8   (6 min 08 s, 8 cores, local[*])
+local.features.feature_customer_daily   9,080,179 rows
+local.features.feature_article_daily    7,443,545 rows
+local.features.feature_cross_daily     19,980,389 rows
+warehouse total after the build: 1.0 GB
+```
+
+(An earlier full build with DOUBLE money took 283.8 s. Decimal arithmetic costs
+about 30% here — see below for why it is worth it.)
+
+### THE FINDING OF THIS STEP — the backfill checkpoint failed, and not for any reason the doc names
+
+First run of "recompute an arbitrary 30-day window mid-2019 and diff it against
+what the full run produced":
+
+```
+window 2019-06-01 .. 2019-06-30
+rows in window: 469,829 (customer)
+assert_identical(before, after, ignore_cols=())
+  only in a: 31,387
+  only in b: 31,387       -> AssertionError
+```
+
+Same row count, so nothing was missing — 31,387 rows had different *values*.
+The doc predicts this check catches the truncation trap, an off-by-one, or
+non-determinism. It was the third, in a form the doc does not mention. Column by
+column:
+
+```
+COL cust_n_txn_7d        n_diff=0
+COL cust_n_articles_7d   n_diff=0
+COL cust_spend_7d        n_diff= 7,328   max|delta| = 8.88e-16
+COL cust_avg_price_7d    n_diff= 6,750   max|delta| = 2.78e-17
+COL cust_n_txn_30d       n_diff=0
+COL cust_spend_30d       n_diff=15,631   max|delta| = 8.88e-16
+COL cust_n_txn_90d       n_diff=0
+COL cust_spend_90d       n_diff=23,758   max|delta| = 1.78e-15
+
+EXAMPLE  day_index=256  full=1.2807966101694914  backfill=1.2807966101694916
+                        n_txn_90d = 44 in both
+```
+
+**Every integer count is bit-identical; only the DOUBLE columns differ, in the
+last bit.** Floating-point addition is not associative, and the summation order
+inside a hash aggregate depends on how the input was partitioned. The full build
+reads 734 days and the backfill reads 120, so Spark splits the input differently,
+sums the same prices in a different order, and lands on a different last bit.
+
+This matters more than the magnitude suggests. Nothing downstream would notice
+1e-15. What *would* happen is that the checkpoint fails on every backfill
+forever, gets labelled flaky, and is quietly downgraded to a row-count check —
+at which point the truncation trap it exists to catch walks straight through.
+The doc says this single diff "catches the truncation trap, the off-by-one, and
+any non-determinism, which is why it's the checkpoint". It is right, and the
+non-determinism it catches first is one you have to design out before the check
+is usable.
+
+**Fix: money is `DECIMAL(12,10)`, not `DOUBLE`, from the daily aggregate up.**
+Decimal addition is exact and therefore order-independent. `price` has 9,857
+distinct values in [1.69e-05, 0.5915] and all survive `DECIMAL(10,8)` without
+collision (step 1.4), so 10 decimal places is comfortably lossless. Spark then
+carries `spend` as `decimal(32,10)` and `avg_price` as `decimal(38,16)`.
+
+This is the same argument as step 1.4's `DECIMAL` over `DOUBLE` advice for a key
+column, arriving one layer later and for a different reason — there the risk was
+a float key re-serializing; here it is a float *aggregate* being non-reproducible
+across partitionings. Worth noticing that the doc makes the argument for keys and
+not for measures, when measures are where it actually bit.
+
+### Checkpoint — after the decimal fix
+
+```
+window 2019-06-01 .. 2019-06-30, backfill via build_features(start, end)
+BACKFILL_SECONDS 51.5
+rows written in the window: 1,960,023
+  feature_customer_daily   469,829 -> only in a: 0, only in b: 0   IDENTICAL
+  feature_article_daily    356,254 -> only in a: 0, only in b: 0   IDENTICAL
+  feature_cross_daily    1,133,940 -> only in a: 0, only in b: 0   IDENTICAL
+totals unchanged: 9,080,179 / 7,443,545 / 19,980,389
+```
+
+Whole-row comparison with `ignore_cols=()`, i.e. including nothing excluded.
+**PASS.**
+
+### And the checkpoint has teeth — mutation-checked
+
+`read_start = start - MAX_WINDOW` was changed to `read_start = start`, which is
+the backfill-truncation trap exactly as the doc describes it:
+
+```
+only in a: 326,130
+only in b: 326,130      -> AssertionError
+```
+
+**326,130 of 469,829 customer-day rows in the window — 69% — come back wrong**,
+with no error, no null, and a table that still passes its leakage tests. That is
+the number that makes the read/write asymmetry worth writing in the docstring.
+(The mutated run corrupts the window, so the correct backfill has to be re-run
+afterwards to restore it; it was, and the diff is clean again.)
+
+### Numbers §7's metric table asks for
+
+| Quantity | Value |
+|---|---|
+| Full feature build, 734 days | **367.8 s** |
+| Rows written, full build | **36,504,113** across three tables |
+| Source rows processed, full build | 31,788,324 |
+| 30-day backfill | **51.5 s** |
+| Rows written, 30-day backfill | **1,960,023** |
+| Machine | 8 cores, 16 GiB, `local[*]` |
+
+Week 4's single-node-vs-multi-node decision is made from these: 6 minutes for the
+whole feature layer on a laptop means the feature backfill is **not** the
+cluster-shaped job. Candidate generation still is.
