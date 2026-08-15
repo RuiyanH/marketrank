@@ -25,6 +25,7 @@ dev = [
     "numpy",
     "scikit-learn",
     "matplotlib",
+    "pyarrow",
 ]
 
 [build-system]

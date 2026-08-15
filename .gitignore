@@ -33,3 +33,7 @@ conf/spark-defaults.conf
 dbt/target/
 dbt/logs/
 dbt/dbt_packages/
+
+# Regenerable model/export artifacts (marketrank.retrieval.dataset, trained
+# checkpoints). Rebuild with `make twotower-data` / `make twotower-train`.
+artifacts/
