@@ -687,3 +687,73 @@ afterwards to restore it; it was, and the diff is clean again.)
 Week 4's single-node-vs-multi-node decision is made from these: 6 minutes for the
 whole feature layer on a laptop means the feature backfill is **not** the
 cluster-shaped job. Candidate generation still is.
+
+---
+
+## Step 3.1 — Baselines first
+
+Measured on `val_tune` (2020-08-12 .. 2020-08-25), **full scale**, all customers,
+**464,982** distinct true (customer, article) purchase pairs. Candidates are
+built from `t_dat < 2020-08-12` only. Popularity is the top 2,000 articles by
+transaction count in the preceding 30 days; repurchase is the customer's own
+prior distinct articles, most-recent-first; the union puts repurchase first and
+fills with popularity.
+
+Recall is computed by ranking each true pair directly rather than materialising
+300k x 500 candidate rows — same answer, and it runs in 92 s instead of not at
+all on this machine.
+
+| Baseline | recall@12 | recall@100 | recall@500 |
+|---|---|---|---|
+| repurchase | 2.32% | 3.28% | 3.36% |
+| recent popularity | 1.22% | 6.21% | 17.93% |
+| **union (the denominator)** | **2.52%** | **6.91%** | **18.85%** |
+
+**These are the numbers the two-tower has to beat.** Any "recall@N up x% over
+baseline" claim in §11 is relative to `union`, not to `repurchase` and not to
+random.
+
+### The doc is wrong about repeat purchase, and it is worth knowing exactly how
+
+Step 3.1 says "Repeat purchase is a large fraction of H&M's signal." Measured, it
+depends entirely on what counts as "the same thing":
+
+```
+REPURCHASE CEILING (fraction of val_tune purchases the customer had EVER bought before)
+  same article_id       3.36%   (15,615 / 464,982)
+  same product_code     8.22%   (38,203 / 464,982)
+  same product_type_no 64.34%   (299,182 / 464,982)
+```
+
+`article_id` in this dataset is a specific colour/size variant, so exact-article
+repurchase is **3.4%**, not "a large fraction". At the garment level it is 8%; at
+the category level it is 64%. The doc's sentence is true only at the category
+grain, which is a different mechanism — it is not repurchase, it is category
+affinity, and it is the thing step 4.1's third candidate source ("top popular in
+the customer's dominant category") actually exploits.
+
+Two things follow, and both change decisions:
+
+1. `rep_rank@500` = 3.36% is a hard ceiling, not a tuning target. No amount of
+   ordering the repurchase list improves it.
+2. Step 4.1's candidate sources should be read as: ANN, exact-article repurchase
+   (small), and **category-conditioned popularity (the big one)**. Budget effort
+   accordingly.
+
+Cold start is *not* the explanation for the low numbers: **93.35%** of the true
+pairs belong to customers who already had purchase history, and restricting to
+those customers changes union recall@500 from 18.85% to 18.82%. The median such
+customer has 30 distinct prior articles (p90 = 107, p99 = 250).
+
+Popularity's own ceiling at depth 2,000 is **41.38%** — that is the fraction of
+val_tune purchases that are of an article in the recent top-2,000 at all.
+
+### Platform note that costs an hour if you hit it
+
+The macOS `lightgbm` wheel links `@rpath/libomp.dylib` and searches only Homebrew
+and MacPorts prefixes, so `import lightgbm` fails with `Library not loaded:
+@rpath/libomp.dylib` unless libomp is installed system-wide. `torch` ships one.
+`DYLD_LIBRARY_PATH` is read by dyld at process start, so this cannot be fixed
+from `config.py` the way `SPARK_CONF_DIR` is — it has to be exported, and the
+Makefile does it. A `ctypes.CDLL` preload of torch's libomp does **not** work;
+tried and recorded here so nobody tries it twice.

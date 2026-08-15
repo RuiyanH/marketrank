@@ -18,6 +18,13 @@ dev = [
     "dbt-spark[session]",
     "dbt-duckdb",
     "pytest",
+    # week 3 onward
+    "torch",
+    "lightgbm",
+    "hnswlib",
+    "numpy",
+    "scikit-learn",
+    "matplotlib",
 ]
 
 [build-system]

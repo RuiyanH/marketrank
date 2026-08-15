@@ -19,6 +19,13 @@ export DBT_PROFILES_DIR := $(CURDIR)/dbt
 # spark.driver.bindAddress/host, so the split by kind survives intact.
 export SPARK_LOCAL_IP := 127.0.0.1
 
+# macOS only: the lightgbm wheel links @rpath/libomp.dylib and searches only
+# Homebrew/MacPorts prefixes, so it fails to load unless libomp is installed
+# system-wide. torch ships one. DYLD_* is read by dyld at process start, so this
+# cannot be done from config.py -- it has to be in the environment.
+TORCH_LIB := $(CURDIR)/.venv/lib/python3.11/site-packages/torch/lib
+export DYLD_LIBRARY_PATH := $(TORCH_LIB)
+
 .PHONY: help render-conf load-raw seeds dbt dbt-ci test test-fast clean-dbt
 
 help:
