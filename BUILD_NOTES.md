@@ -1004,3 +1004,182 @@ principle, and the two-tower underperforms popularity. The bottleneck in this
 build is **stage 1**, not the ranker — which is exactly the diagnostic the doc
 says the ceiling exists to give, and it is pointing at step 3.2's failed
 checkpoint from a second direction.
+
+---
+
+## Step 4.2 — The join, and the size
+
+### Sizing arithmetic, done before the join, from measured row counts
+
+```
+train-slice positives (distinct customer x article x day, <= 2020-08-11)
+                                                        27,155,032
+N candidates per positive                                      100
+candidate rows at full scale                        2,715,503,200
+feature width after the join                     37 columns (measured)
+  of which numeric feature columns                              27
+bytes per row, 8-byte numerics + two 64-char id strings    ~ 350 B
+                                                        -----------
+uncompressed candidate-feature table              ~ 950 GB
+at parquet+zstd, using this build's measured 8.6x on the
+feature tables (36.5M rows -> ~430 MB on disk)              ~ 110 GB
+```
+
+The spec's estimate is 40–160 GB and the measured arithmetic lands inside it, at
+**~110 GB compressed / ~950 GB uncompressed** if all of the `train` slice is used
+as positives. That is the number that makes "I used Spark because the join
+fan-out is ~110 GB" a sentence with a measured `__` in it — and it is also,
+unambiguously, **not runnable on this machine** (8 cores, 16 GiB, 13–21 GiB free
+disk). Decision #3 that the doc defers to the reader — how much history becomes
+training positives — is exactly the knob that sets this, and this build turns it
+all the way down.
+
+**What actually ran: 2,091,944 candidate rows for 20,000 customers on one day.**
+That is 0.077% of the full-scale row count. Everything below is measured on it
+and is labelled reduced-scale wherever it appears.
+
+### The join
+
+```
+candidates in                     2,091,944
+joined rows out                   2,091,944     (ROWS_LOST_IN_JOIN = 0)
+columns after the join                   37
+```
+
+Left joins throughout, so no row is lost; the article dimension is broadcast
+(it is ~100 MB against a default `autoBroadcastJoinThreshold` of 10 MB, so this
+does **not** happen by itself — `F.broadcast()` is explicit in the code).
+
+### NULL AUDIT — and it fails, for the reason the doc predicted in step 2.3
+
+```
+cust_*  features NULL on 1,791,222 of 2,091,944 rows   85.62%
+art_*   features NULL on   242,961 of 2,091,944 rows   11.61%
+cross_* features NULL on 2,029,939 of 2,091,944 rows   97.04%
+```
+
+**This is the missing spine.** `build_features` was run with `spine=None`, so
+`feature_customer_daily` contains a row for (customer, day) only where that
+customer transacted. Candidates are scored on a day the customer mostly did not
+transact, so the join finds nothing. Confirmed exactly:
+
+```
+customers in the eval cohort                              20,000
+with a customer-feature row on 2020-08-12                  2,818   (14.09%)
+```
+
+The doc says: "Get this wrong and features exist only where labels are positive
+— which is its own, extremely flattering, kind of leak." It is right, and the
+number is 85.6%.
+
+### The leakage re-test on the joined table — and the distinction that matters
+
+Re-running step 2.1's test 2 on the joined table **failed at first**: 300,722
+rows differed between features built from the full log and features built from a
+log truncated at the feature date. Diagnosed rather than assumed:
+
+```
+feature rows at day0 from the FULL log            2,818
+feature rows at day0 from the TRUNCATED log           0
+rows present in both                                  0
+value mismatches among shared rows                    0
+missing rows that transacted ON day0              2,818 of 2,818
+```
+
+**No feature value changed. The row SET changed.** With `spine=None`, whether a
+(customer, day) feature row *exists* depends on whether the customer transacted
+that day — which is future information relative to the feature date, even though
+every value in the row is strictly prior. So:
+
+- The PIT *values* survive the join. Gate 1 is not in question.
+- The PIT *row set* does not, and that is a second, distinct property nobody
+  states. An explicit spine makes the row set a function of the query rather
+  than of the outcome, and that is a better reason to have one than "otherwise
+  some rows are missing".
+
+Worth noting why `tests/test_pit.py::test_future_events_do_not_change_past_features`
+does not catch this: it compares rows with `day_index <= cutoff`, where both runs
+have the same row set. The test is correct about values and silent about
+existence. **If you re-implement this, add a third assertion — that the row set
+for days <= cutoff is also unchanged — and expect it to fail until the spine
+exists.**
+
+### The fix, plumbed and proven at reduced scale
+
+`build_features` now takes `customer_spine` / `article_spine`, and
+`features.customer_day_spine(spark, customers, start, end)` builds the pairs.
+Proven on the eval cohort at day0:
+
+```
+coverage of the 20,000-customer cohort   14.09%  ->  100.00%
+value mismatches on the 2,818 rows present both ways:      0
+spine rows with non-zero 90-day activity:   14,875 (74.38%)
+```
+
+The spine adds rows and changes no value, which is exactly the required
+behaviour. The remaining 25.6% of spine rows are customers with genuinely no
+activity in the prior 90 days, correctly zero-filled rather than null.
+
+**Not run: a full rebuild of the feature tables with a spine.** The three tables
+took 6 min 08 s to build without one; a spine over all 1.37M customers x 734 days
+is 1.006 **billion** (customer, day) rows before any features are attached, which
+is not buildable here — the practical version is a spine over the candidate
+cohort and the scoring days only, which is what the reduced run above does. That
+scoping decision is unavoidable at any scale, not an artifact of this laptop: a
+dense customer x day spine is never the right object.
+
+---
+
+## Where this build stops, and what is left
+
+Committed and checkpointed: **week 1 complete, week 2 complete (gate 1 passed),
+week 3 measured with step 3.2's checkpoint failing, week 4 through step 4.2's
+audits.**
+
+| Step | State |
+|---|---|
+| 1.0 – 1.7 | done, checkpoints passed; 1.7 verified locally, never on a runner |
+| 2.0 – 2.4 | done, checkpoints passed; **gate 1 passed and mutation-checked** |
+| 3.1 | done, baselines measured at full scale |
+| 3.2 | **checkpoint FAILED** — two-tower loses to the baseline union |
+| 3.3 | done, ANN measured; conclusion is that ANN is not needed here |
+| 4.1 | done, recall ceiling 7.475% measured |
+| 4.2 | sizing done, join done, **null audit fails on the missing spine**; fix plumbed and proven at reduced scale, full rebuild not run |
+| 4.3 (misha) | **skipped by instruction** — single machine only |
+| 5.x – 10.x | **not started** |
+
+**Gate status.** Gate 1 (PIT leakage, step 2.3) — **passed**, and the tests were
+mutation-checked so the pass means something. Gate 2 (calibration plot, step 5.3)
+— not reached. Gate 3 (OPE confidence bands, week 8) — not reached.
+
+**The honest summary of the modelling half:** every retrieval number this build
+produced points the same way. Exact-article repurchase has a 3.36% ceiling, the
+two-tower loses to recent popularity, and the three-source candidate set tops out
+at a 7.5% recall ceiling. Stage 1 is the bottleneck, and stage 2 cannot be
+evaluated meaningfully until it is fixed — a ranker trained on a candidate set
+with a 7.5% ceiling is being asked to order a set that usually contains nothing
+worth ordering. **Do not read week 5 onward as blocked on effort; it is blocked
+on step 3.2's checkpoint, which is the doc's own stated stopping rule.**
+
+Three concrete things the next session should do, in order:
+
+1. **Rebuild the feature tables with a spine over the candidate cohort**, and add
+   the row-set assertion to `test_pit.py`. Everything downstream reads NULLs
+   until this lands.
+2. **Fix stage 1 before building stage 2.** In priority order: mixed negatives
+   (in-batch plus uniform from the full catalog), raise or remove the 20-article
+   cap on the customer tower's item average, and train on more than 10% of the
+   available positives. Add global popularity as a candidate source — measured,
+   +1.6 points of ceiling for 27 more candidates.
+3. **Only then week 5.** The calibration gate is meaningful; NDCG on a 7.5%-ceiling
+   candidate set is not.
+
+### Things that cost real time here, so you can skip the cost
+
+- `spark-defaults.conf` cannot carry an env-dependent warehouse path (step 1.5).
+- dbt-spark's session needs `SPARK_LOCAL_IP` because it never calls `get_spark()`.
+- Iceberg has no views; staging must not be `view` (step 1.5).
+- Money must be DECIMAL or the backfill checkpoint can never pass (step 2.4).
+- macOS lightgbm needs `DYLD_LIBRARY_PATH` pointing at torch's libomp (step 3.1).
+- logQ belongs after temperature scaling, and `article_idx` is 1-based (step 3.2).
+- The spine is not optional the moment week 4 starts (step 4.2).
