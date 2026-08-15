@@ -497,3 +497,69 @@ each other. Resolved in favour of 2.1: the aggregate and window functions take
 **DataFrames**, and a separate `build_features(spark, ...)` is the only thing
 that touches tables. That is also the shape that makes the backfill parameter of
 step 2.4 natural, so the doc's own later step wants it too.
+
+## Steps 2.2 / 2.3 — daily aggregates and the rolling windows
+
+**Deviation on the source table.** The feature pipeline reads
+`local.raw.transactions`, not `local.marts.fact_transaction`. With raw,
+`n_txn = count(*)` counts units purchased and `spend = sum(price)` is exact,
+which is what the aggregate functions are written for; reading the fact would
+need an adapter (`price_mean` × `qty`) for no gain. The fact table remains the
+analytics-facing model and is what week 7's elasticity work uses.
+
+**Deviation on `n_articles`.** `daily_customer_agg` counts distinct articles
+*that day*; the rolling layer sums those, so `cust_n_articles_30d` counts
+(day, article) pairs rather than distinct articles over 30 days. An exact
+distinct count over a range frame is not expressible as a window aggregate. The
+name is left visible rather than hidden behind `n_distinct_articles`.
+
+**`avg_price` over a window is computed from the two sums over the same frame**,
+not by averaging the daily averages — the latter weights days equally instead of
+transactions. Worth stating because it looks like a rename and is not.
+
+### Checkpoint 2.2 — row counts per grain, plus a hand spot-check
+
+Full 31,788,324-row log:
+
+```
+daily_customer_agg   9,080,179 rows   22.1 s
+daily_article_agg    7,443,545 rows   10.3 s
+daily_cross_agg     19,980,389 rows   25.6 s
+```
+
+Spot-check on the heaviest customer in the dataset
+(`be1981ab818cf4ef6765b2ecaea7a2cbf14ccd6e8a7ee985513d9e8e53c6d91b`, 1,895
+transactions), feature row for `day_index = 375` (2019-09-30):
+
+```
+pipeline:  cust_n_txn_7d = 15   cust_spend_7d = 0.5082372881355932
+by hand:   count(*)      = 15   sum(price)    = 0.5082372881355932
+           over raw rows with day_index in [368, 374]
+```
+
+Exact to the last digit, and the window is `[d−7, d−1]`, not `[d−7, d]`. **PASS.**
+
+### Checkpoint 2.3 — GATE 1
+
+```
+tests/test_pit.py::test_window_excludes_same_day              PASSED
+tests/test_pit.py::test_future_events_do_not_change_past_features PASSED
+2 passed in 10.42 s
+```
+
+**GATE 1 PASSED.**
+
+A passing test proves nothing about a test's teeth, so both were
+**mutation-checked** against the two leaks they exist for:
+
+| Mutation | test 1 | test 2 |
+|---|---|---|
+| `rangeBetween(-w, -1)` → `rangeBetween(-w, 0)` (the one-character leak) | **FAIL** | pass |
+| a global mean over all time added to a feature column | **FAIL** | **FAIL** |
+| neither (restored) | pass | pass |
+
+That table is the doc's claim about the two tests, confirmed rather than
+repeated: test 1 catches the off-by-one and is blind to the global statistic;
+test 2 catches the global statistic. Neither test alone is the gate — the pair
+is. Run this mutation check yourself when you re-implement; it takes two minutes
+and it is the only evidence that the gate is a gate.
