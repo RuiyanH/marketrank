@@ -213,6 +213,14 @@ places is *not* obviously enough by inspection — the raw values carry ~18
 significant digits (`0.050830508474576264`) — and the reason it works is that the
 underlying price grid is coarse: 9,857 values over a 4-decade range.
 
-**Checkpoint** (count query proving grain uniqueness) is discharged jointly with
-step 1.5: `fact_transaction` materializes at 28,583,889 rows, equal to the
-distinct-key count above, and the dbt uniqueness test on the grain runs green.
+**Checkpoint — measured half.** The count query ran and is quoted above.
+`count(distinct customer_id, article_id, t_dat, sales_channel_id)` = 28,583,889,
+which is by construction the row count a `GROUP BY` on those four columns
+produces, so the grain is unique. Source minus fact = 31,788,324 − 28,583,889 =
+**3,204,435 rows**, the multi-quantity purchase population.
+
+**Checkpoint — not yet discharged as a property of a built table.** At this commit
+there is no `dbt/` directory and no materialized `fact_transaction`. The number
+above is a property of a query over `raw.transactions`, not of a table that
+exists. Step 1.5 below records the materialized row count and the dbt uniqueness
+test result when they have actually been run.
