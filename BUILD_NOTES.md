@@ -1183,3 +1183,142 @@ Three concrete things the next session should do, in order:
 - macOS lightgbm needs `DYLD_LIBRARY_PATH` pointing at torch's libomp (step 3.1).
 - logQ belongs after temperature scaling, and `article_idx` is 1-based (step 3.2).
 - The spine is not optional the moment week 4 starts (step 4.2).
+
+---
+---
+
+# Stage-1 recovery — `docs/STAGE1_RECOVERY.md`, steps R.0–R.6
+
+Everything above this line is the reference build, and the "Where this build
+stops" table is its state at the moment the recovery plan was written. The plan
+inserts between week 3 and week 5 and is executed below, in its order: R.0
+(tests) before any compute, R.4 (scale) last.
+
+Same rules as above. Every number was produced by a command that ran; anything
+not produced says **not run**. Reduced-scale configurations state exactly what
+was reduced, and every number derived from one carries the label.
+
+## Environment for the recovery session
+
+| Fact | Value |
+|---|---|
+| Machine | as above — Apple Silicon, 8 cores, 16 GiB RAM |
+| Free disk at R.0 | **22 GiB** on the volume holding the worktree |
+| Warehouse size at R.0 | **2.8 GB** |
+| `MARKETRANK_DATA_RAW` | `/Users/test/Developer/marketrank/data/raw` (read-only) |
+| `MARKETRANK_WAREHOUSE` | `/Users/test/Developer/marketrank-build/warehouse` |
+
+Disk is the binding constraint on R.1's rebuild and it is watched at every step:
+the standing instruction is to stop at a clean committed step if free space drops
+below 10 GiB.
+
+### The entry number, reproduced before anything was touched
+
+`artifacts/twotower/model.pt` was re-evaluated on the untouched features, the
+untouched 20,000-customer cohort and the untouched 70,715-pair denominator:
+
+```
+REEVAL_OLD_FEATURES  n_true_pairs 70715
+  recall@12 1.1327%   recall@100 5.4812%   recall@500 15.0039%
+```
+
+**That is epoch 7, not epoch 4.** Compare `artifacts/twotower/history.json`:
+epoch 7 is `recall_at_100 = 0.054811567559923634` to the last digit, and epoch 4
+— the **5.531%** headline the plan quotes — is `0.055306512055433785`.
+
+So the saved checkpoint is the *last*-epoch model and the best-epoch model was
+never written to disk. `train()` returns the model after the final epoch and
+nothing in the code path saves per-epoch. This matters for R.1, which says
+"re-run 3.2's evaluation bit-for-bit unchanged, same checkpointed model": the
+only checkpoint that exists is epoch 7's, so the re-eval arm is compared against
+**5.481%**, and the retrain arm — which selects its own best epoch — is compared
+against **5.531%**. Both reference numbers are carried explicitly below rather
+than collapsed into one, because collapsing them would silently move the bar by
+0.05 points in whichever direction flattered the result.
+
+Two things this also establishes: the eval path is deterministic (it reproduced
+a four-week-old number to 16 significant figures), and the artifacts on disk are
+intact despite `artifacts/` being gitignored.
+
+## Step R.0 — Tests before compute
+
+**Written and committed before any recovery compute ran**, which is the point of
+the step: week 3 shipped two silent bugs and had no tests where week 2 had its
+leakage pair, so every R.1–R.4 number is worthless if a third one is still in
+the eval path.
+
+`tests/test_retrieval.py`, four assertions. Three run with no JVM and no data;
+the coverage test builds its own four-row DataFrame, so the whole file runs in
+CI alongside `test_pit.py`.
+
+### Two small pieces of production code moved so they could be tested
+
+1. **`retrieval/model.py::sampled_softmax_logits`** — the logit construction was
+   inline in `train()`, where no test can reach it. Extracted verbatim; the
+   placement of the logQ term relative to the temperature is now an executable
+   claim instead of a comment. R.3 extends this same function with uniform
+   negatives, so the extraction pays for itself twice.
+2. **`features.py::feature_coverage`** — the coverage audit, phrased over the
+   feature table. Test 2 and R.1's full-scale checkpoint call the identical
+   function, which is the only way the test can be said to be the audit.
+
+### Why the spine bug was invisible to week 3 in the first place
+
+Worth stating because it changes where the audit has to live.
+`retrieval/dataset.customer_context` left-joins the customer features and then
+wraps every numeric in `log1p(coalesce(col, 0.0))`. A customer with no feature
+row therefore reaches the tower as a **row of plausible-looking zeros, not as a
+null** — there was never a null downstream to audit. Week 4 only caught it
+because the candidate join does not coalesce. So the audit has to be taken
+against the feature table, before anything fills the gaps in, and that is what
+`feature_coverage` does.
+
+### Checkpoint — the mutation table
+
+A passing test proves nothing until it has failed for the right reason, so both
+known bugs were re-introduced, one line each, plus the spine and the padding
+mask. Restored between every run; `grep -rn MUTANT src/` is empty afterwards.
+
+| Mutation | t1 align | t2 coverage | t3 recall | t4 logQ |
+|---|---|---|---|---|
+| *(none — restored)* | pass | pass | pass | pass |
+| `load_articles` returns densely-packed arrays | **FAIL** | pass | pass | pass |
+| `recall_at` stops masking column 0 | **FAIL** | pass | pass | pass |
+| logQ correction divided by the temperature | pass | pass | pass | **FAIL** |
+| `rolling_features` ignores the `spine` argument | pass | **FAIL** | pass | pass |
+
+Every mutation is caught, each by exactly one test, and no test is redundant
+with another. **PASS.**
+
+Full suite after restoration: `pytest -q` → **9 passed in 18.52 s** (the 5
+pre-existing tests plus these 4).
+
+### DEVIATION — the plan's checkpoint cannot hold as written, so a fourth test exists
+
+The plan says: *"Reverting the logQ-units fix fails test 3; reverting the
+alignment fix fails test 1."* The second half is true and is confirmed above.
+**The first half is not achievable by test 3 as the plan specifies it.**
+
+Test 3 is "a hand-built 3-customer case where the correct recall@k is computable
+on paper". Recall is a pure function of fixed embeddings and ground truth; it
+never constructs a training logit. The logQ-units bug lives in `train()` and
+cannot reach it. The only way test 3 could catch it is if test 3 *trained* a
+model — which would make it an assertion about optimisation, flaky and slow, and
+would stop it being computable on paper, which was the property the plan asked
+for.
+
+Resolved in favour of the plan's intent (both known bugs covered by the suite)
+rather than its letter: tests 1–3 are written exactly as specified, and
+**test 4, `test_logq_correction_is_applied_in_logit_units`, is added** to carry
+the logQ half. It asserts the correction equals `(u·v)/T − log q`, that it does
+*not* equal `(u·v − log q)/T`, and that the gap between them is
+`log q · (1 − 1/T)` — a **+219.77**-logit offset at `T = 0.05`, which is the
+measured mechanism behind week 3's loss of 49 and recall@500 of 3.5%.
+
+Test 3 is kept and is not redundant: it pins the **denominator** to true
+(customer, article) pairs rather than customers, which is the property that
+makes the tower's numbers comparable to `baselines.py`'s at all. It catches
+neither known bug, and the table above says so honestly rather than implying
+four tests catch four bugs.
+
+The plan document is not edited — this is recorded here, per the standing rule.

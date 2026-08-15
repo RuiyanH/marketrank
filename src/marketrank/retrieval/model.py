@@ -48,6 +48,34 @@ EMB_DIM = 64
 HIDDEN = 128
 
 
+def sampled_softmax_logits(
+    u: torch.Tensor,
+    v: torch.Tensor,
+    log_q: torch.Tensor,
+    temperature: float,
+    use_logq: bool = True,
+) -> torch.Tensor:
+    """
+    Logits for one sampled-softmax batch: `(u @ v.T) / T - log_q`.
+
+    THE ORDER OF THESE TWO OPERATIONS IS THE WHOLE FUNCTION. The logQ term is a
+    correction in *logit* units, so it is subtracted AFTER temperature scaling.
+    Writing `(u @ v.T - log_q) / T` divides the correction by T as well: with
+    T = 0.05 and `log q ~ -11` that is a +230 offset which swamps the dot
+    products entirely. It still trains and it still converges -- measured
+    symptom was a loss of 49 and recall@500 of 3.5% (BUILD_NOTES step 3.2).
+
+    `log_q` is per COLUMN (one entry per candidate article in the batch), so it
+    broadcasts along the row axis. Extracted from `train()` so the placement is
+    an executable claim rather than a comment -- see
+    `tests/test_retrieval.py::test_logq_correction_is_applied_in_logit_units`.
+    """
+    logits = (u @ v.t()) / temperature
+    if use_logq:
+        logits = logits - log_q.unsqueeze(0)
+    return logits
+
+
 def pick_device() -> torch.device:
     if torch.backends.mps.is_available():
         return torch.device("mps")
@@ -295,15 +323,14 @@ def train(
             u = model.customer(recent, age, cats, numeric)          # (B, d)
             v = model.article(arts, art_cats_t[arts])               # (B, d)
 
-            logits = (u @ v.t()) / temperature                      # (B, B)
-            if use_logq:
-                # Subtract the log sampling probability of the COLUMN article,
-                # AFTER temperature scaling -- the correction is in logit units,
-                # not score units, and dividing it by T as well swamps the dot
-                # products entirely (measured: loss 49 and recall 3.5%).
-                # Without it the popular items in the batch are over-penalised
-                # as negatives and the model systematically under-ranks them.
-                logits = logits - log_q[arts].unsqueeze(0)
+            # Subtract the log sampling probability of the COLUMN article, after
+            # temperature scaling. Without it the popular items in the batch are
+            # over-penalised as negatives and the model systematically
+            # under-ranks them (measured: 17x on recall@500). The placement of
+            # the correction relative to T lives in sampled_softmax_logits.
+            logits = sampled_softmax_logits(          # (B, B)
+                u, v, log_q[arts], temperature, use_logq=use_logq
+            )
 
             target = torch.arange(len(b), device=device)
             loss = Fn.cross_entropy(logits, target)

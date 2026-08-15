@@ -318,6 +318,45 @@ def customer_day_spine(
     return customers.select("customer_id").distinct().crossJoin(F.broadcast(days))
 
 
+def feature_coverage(
+    feature_df: DataFrame,
+    entities: DataFrame,
+    key_col: str,
+    day_index_value: int,
+) -> dict:
+    """
+    What fraction of `entities` actually has a feature row on a given day?
+
+    This is the audit that turns the spine bug from a silent one into a loud
+    one, and it is deliberately phrased over the FEATURE TABLE rather than over
+    a model's input tensor. The reason is the thing that made the bug survive
+    week 3: `retrieval.dataset.customer_context` left-joins the features and
+    then wraps every numeric in `log1p(coalesce(col, 0.0))`, so a customer with
+    no feature row arrives at the tower as a row of honest-looking zeros, not as
+    a null. There was never a null to audit downstream -- week 4 only caught it
+    because the candidate join does not coalesce.
+
+    So: measure coverage where the rows are, before anything fills them in.
+    Measured consequence of skipping this in week 3 -- 2,818 of 20,000 eval
+    customers had a row (14.09%), and the tower scored the other 85.91% from
+    all-zero rolling features (BUILD_NOTES steps 4.2 and R.1).
+    """
+    ent = entities.select(key_col).distinct()
+    have = (
+        feature_df.filter(F.col("day_index") == F.lit(day_index_value))
+        .select(key_col)
+        .distinct()
+    )
+    n_entities = ent.count()
+    n_covered = ent.join(have, key_col, "inner").count()
+    return {
+        "day_index": day_index_value,
+        "n_entities": n_entities,
+        "n_covered": n_covered,
+        "coverage": (n_covered / n_entities) if n_entities else float("nan"),
+    }
+
+
 def build_features(
     spark: SparkSession,
     start: str | None = None,
