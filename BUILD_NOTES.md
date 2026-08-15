@@ -934,3 +934,73 @@ sees — worth knowing which of the two numbers you are quoting.
 What changes at 10M items: the exact matmul is 95x more work and the vectors are
 2.6 GB, so it stops fitting comfortably in cache and the single-query cost goes
 to ~100 ms. That is where the index stops being decoration.
+
+---
+
+## Step 4.1 — Candidate sources
+
+Reduced scale, same cohort as week 3 so the numbers are comparable: **20,000**
+`val_tune` customers, candidates fixed as of 2020-08-12, **70,715** true
+(customer, article) pairs. The doc's three sources, each tagged.
+
+```
+n_customers                      20,000
+n_candidate_rows              2,091,944
+mean candidates per customer      104.6   (target N ~ 100)
+min / max per customer             50 / 120
+rows from ann / repurchase / category   1,000,000 / 418,242 / 742,573
+mean sources per candidate          1.033
+```
+
+### RECALL CEILING = 7.475%
+
+This is the hard ceiling on end-to-end recall for this candidate set. The ranker
+cannot recover a purchase that stage 1 dropped, so **no amount of week-5 work
+can push end-to-end recall above 7.5% on this configuration.**
+
+Contribution of each source to the union (a pair can be covered by more than
+one, which is why these sum to more than the ceiling):
+
+| Source | covers | alone |
+|---|---|---|
+| two-tower ANN (top 50) | 3.329% | 3.329% |
+| repurchase (top 30) | 2.916% | 2.916% |
+| dominant-category popularity (top 40) | 2.162% | 2.162% |
+| **union** | **7.475%** | |
+
+Overlap between sources is small: the three solo numbers sum to 8.407% against a
+7.475% union, and mean sources per candidate is 1.033. The sources are close to
+disjoint, which is the good case — each is buying something the others are not.
+
+### The source list in the doc is measurably suboptimal, and one experiment fixes it
+
+Step 3.1 measured that the *global* recent-popularity list covers 6.25% of these
+pairs at depth 100. The doc's third source is popularity **within the customer's
+dominant category**, and at depth 40 that covers only 2.162%. So the
+personalisation in that source is costing recall rather than buying it — a
+single `product_type_no` is too narrow a cone.
+
+Adding plain global recent popularity (top 40) as a fourth source:
+
+```
+mean candidates per customer   104.6  ->  131.4
+RECALL CEILING                 7.475% ->  9.083%
+global popularity alone (depth 40): 3.168%   vs   dominant-category (depth 40): 2.162%
+```
+
+**+1.6 points of ceiling for 27 more candidates.** Global popularity at equal
+depth beats dominant-category popularity outright, so the honest reading is that
+the doc's source 3 should be *both*, or should be replaced. Recorded as a
+measured deviation rather than applied silently — the committed
+`candidates.py` still implements the doc's three sources, and the fourth is an
+experiment whose numbers are above.
+
+### What the ceiling says about the project
+
+7.5% (or 9.1%) is low, and it is the single most important number week 4
+produces. It is consistent with everything measured so far: the union baseline
+tops out at 18.99% at N=500, exact-article repurchase has a 3.36% ceiling in
+principle, and the two-tower underperforms popularity. The bottleneck in this
+build is **stage 1**, not the ranker — which is exactly the diagnostic the doc
+says the ceiling exists to give, and it is pointing at step 3.2's failed
+checkpoint from a second direction.
