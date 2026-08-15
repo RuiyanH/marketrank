@@ -19,17 +19,17 @@ def read_snapshot(spark: SparkSession, table: str, snapshot_id: int) -> DataFram
     )
 
 
-def assert_identical(spark: SparkSession, table: str, snap_a: int, snap_b: int) -> None:
-    """Fail unless two snapshots hold exactly the same rows, duplicates included."""
-    a = read_snapshot(spark, table, snap_a)
-    b = read_snapshot(spark, table, snap_b)
+def assert_identical(a: DataFrame, b: DataFrame, ignore_cols=("_ingested_at",)) -> None:
+    """Fail unless two DataFrames hold the same rows, ignoring pipeline metadata."""
+    a = a.drop(*ignore_cols)
+    b = b.drop(*ignore_cols)
 
     only_in_a = a.exceptAll(b).count()
     only_in_b = b.exceptAll(a).count()
 
-    print(f"only in {snap_a}: {only_in_a}")
-    print(f"only in {snap_b}: {only_in_b}")
+    print(f"only in a: {only_in_a}")
+    print(f"only in b: {only_in_b}")
 
     if only_in_a or only_in_b:
-        raise AssertionError("snapshots differ — the load is NOT idempotent")
+        raise AssertionError("frames differ — the load is NOT idempotent")
     print("IDENTICAL — the load is idempotent")

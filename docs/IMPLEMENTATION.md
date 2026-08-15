@@ -73,7 +73,12 @@ Two schema traps in this data, both of which bite if you let Spark infer:
 
 **Plumbing.** The CSV read options.
 
-**Checkpoint.** `spark.table("local.raw.articles").count()` = 105,542 and `local.raw.customers` = 1,371,980. **VERIFY** — those are the widely-cited counts, not numbers I ran; whatever you get, write it down, because §2's "105k articles / 1.4M customers" claim on the résumé should be your count.
+**Checkpoint.** `spark.table("local.raw.articles").count()` = **105,542** and `local.raw.customers` = **1,371,980** — measured 2026-08-14, so these are yours now, not the widely-cited figures. They're what §2's "105k articles / 1.4M customers" claim rests on.
+
+**And a number worth knowing the moment the tables exist:** only **104,547** articles and **1,362,281** customers ever appear in a transaction. So **995 articles never sold** and **9,699 customers never bought anything**. Two consequences you'd otherwise meet as bugs:
+
+- Your `relationships` tests only work in one direction. `fact → dim` passes; `dim → fact` would fail on those rows, and it *should* — a catalog article that never sold is normal, not a referential-integrity violation.
+- That's your genuine cold-start population for week 3. A recommender that can only score articles it has seen sell is a recommender that can never surface a new product, which is the failure mode the article-metadata tower exists to avoid.
 
 ### Step 1.2 — Decide the write strategy, deliberately
 
@@ -134,13 +139,35 @@ Which one, and why is (c) a trap here?
 (b) gives you a key that is a function of the data alone. That is the property you want, and "the key is derived from the business grain, not from row order" is the sentence that says it.
 </details>
 
-**Must know.** Note the `price` subtlety before you aggregate: the same customer buying the same article twice on the same day can pay **two different prices** (a markdown mid-day, or different variants collapsing to the same `article_id`). So the grain is `(customer_id, article_id, t_dat, price, sales_channel_id)` with a `qty` count, *or* you aggregate price to a mean and accept the loss. Look at the data and decide — and note which you chose in the README, because the revenue numbers in week 7 are downstream of it.
+**Must know — the `price` subtlety, and the answer, measured 2026-08-14.** The same customer buying the same article twice on the same day can pay **two different prices** (a markdown mid-day, or two variants sharing an `article_id`). So does price belong *in* the key?
 
-**And while you're looking, settle the type.** If `price` ends up *in* the key, a `DOUBLE` is a poor key column. It's deterministic for one CSV parsed one way, so it will work today — but a float key is fragile the moment anything re-serializes it: a Parquet round-trip through a different writer, a `float32` cast in a feature job, a value that reads back as `0.050830508474576265`. Merge and uniqueness both then silently see two keys where there's one. Store the key column as `DECIMAL(10,8)` (or keep the raw string), and keep a `DOUBLE` alongside for arithmetic if you want it. If you go with the mean-price variant, price leaves the key and this stops mattering — which is itself a reason to prefer it.
+The measurements, over all 31,788,324 rows:
 
-`fact_transaction` also carries the `_ingested_at` max and a `revenue = qty * price` measure so the decision layer isn't re-deriving it.
+| | |
+|---|---|
+| Distinct (customer, article, day) | 28,575,395 |
+| …with more than one row (multi-quantity) | **9.51%** — common |
+| **…with more than one distinct price** | **0.80%** (1.72% of source rows) |
+| …of those, *not* explained by sales channel | **97.9%** |
+| Price spread when it happens | median **3.2%**, p90 **25%**, max 97% |
 
-**Checkpoint.** A count query proving that the (b) grain is unique, and the difference between the source row count and the fact row count written down — that difference *is* the multi-quantity purchase rate, which is a fact about your data worth knowing.
+So it's genuine — the channel is already in the key and doesn't account for it — but uncommon, and it mixes two different phenomena. The small gaps are rounding (`0.028457627…` vs `0.028474576…` is 0.06% apart, one cent under a fixed scale factor); the large ones are real markdowns (`0.010661…` vs `0.011847…` is 11%).
+
+**Decision: keep price OUT of the key.** The argument is one line of arithmetic, and it's the one to give in an interview:
+
+> `avg_price × qty` = the sum of the individual prices, exactly. So averaging loses **no revenue**.
+
+Store `qty = COUNT(*)` and `revenue = SUM(price)`, and the money is preserved to the last unit. The only thing you give up is knowing that two units went out at $10 and $8 rather than $9 and $9 — and nothing downstream consumes that. Week 7's elasticity model works at **(article, week)** grain, where those rows are averaged across all customers regardless of what the fact table did.
+
+Carry `price_min` and `price_max` as measures alongside `price_avg` and you haven't even lost the spread — it's just not in the key, which is where it didn't belong. Note the choice in the README anyway; it's exactly the kind of thing an interviewer asks about a fact table.
+
+**The type question closes with it.** A `DOUBLE` is a poor key column — deterministic for one CSV parsed one way, but fragile the moment anything re-serializes it (a Parquet round-trip through a different writer, a `float32` cast, a value that reads back as `0.050830508474576265`), at which point merge and uniqueness silently see two keys where there's one. That would have forced `DECIMAL(10,8)` or the raw string. Since price is now a measure rather than a key, `DOUBLE` is fine.
+
+`fact_transaction` therefore carries: the (b) grain, `qty`, `revenue = SUM(price)`, `price_avg`, `price_min`, `price_max`, and `MAX(_ingested_at)`. Note `revenue` is the **sum**, not `qty × price` — with a mean price they're equal, but writing it as the sum is what makes that true by construction rather than by coincidence.
+
+**Checkpoint.** Your fact table has **28,583,889 rows** against 31,788,324 source rows — a **10.1% collapse**, which *is* the multi-quantity purchase rate. The (b) grain's uniqueness test passes. (For reference: putting price in the key would have given 28,813,419 rows — 0.8% more, for no revenue accuracy.)
+
+**One outlier the count turned up, worth carrying to week 9:** the largest single (customer, article, day) group has **570 rows** — one customer, one item, one day. A bulk order or a test account, either way not organic. That's a ready-made case for step 9.2's row-count anomaly tests, and a better one than a synthetic threshold because it's real.
 
 ### Step 1.5 — Stand up dbt on Spark
 
@@ -599,6 +626,8 @@ So redefine it, in the docstring and in the code: **a full-day refresh reads eve
 
 dbt `source freshness` on `_ingested_at` (this is what step 1.3 bought you), plus row-count anomaly tests per day, plus a drift check on the served path.
 
+**Use the real outlier, not a synthetic one.** Step 1.4's count found a (customer, article, day) group with **570 rows**. Write the test so it would flag that — a threshold on units-per-customer-per-article-per-day — and you have a data-quality check that catches something that actually exists in your data rather than a rule invented to have a rule. Then decide what the pipeline *does* about it: exclude it from training as non-organic, cap it, or keep it and say why. That decision is the interesting half; the test is the easy half.
+
 ---
 
 ## 10. Week 10 — writeup and buffer
@@ -624,9 +653,14 @@ Then §11's bullets, with every `__` filled from a number you measured.
 | Fact | Value | Consequence |
 |---|---|---|
 | `transactions_train.csv` span | 2018-09-20 → 2020-09-22, 734 days | Loaded, all partitions present |
+| Source rows | **31,788,324** | Fact table is 28,583,889 — a 10.1% collapse |
+| `articles.csv` / `customers.csv` rows | **105,542** / **1,371,980** | The résumé's "105k / 1.4M" |
+| …that ever transact | **104,547** / **1,362,281** | 995 unsold articles, 9,699 silent customers — cold start (wk 3), and `relationships` only holds fact→dim |
 | `t_dat` granularity | **DATE, no time** | PIT window must end at `d − 1` (§2.0) |
 | `article_id` | zero-padded string | Never let Spark infer it |
-| Duplicate transaction rows | real — same customer/article/day = quantity | Drives the grain decision (1.4) |
+| Duplicate transaction rows | real — 9.51% of (customer, article, day) groups | Drives the grain decision (1.4) |
+| Same group, differing price | **0.80%** of groups, 97.9% not a channel effect | Price is a measure, not a key (1.4) |
+| Largest single group | **570 rows** | Not organic — week 9 anomaly-test case |
 | `price` | scaled, not currency | All revenue results are relative, per spec §2 |
 | `customers.csv` | `FN`/`Active` sparse, `age` nullable | Cast at staging, not at read |
 | `articles.csv` / `customers.csv` | **current-state snapshots, no history** | Dimension attributes are not PIT (§2.0) — README limitation |
@@ -652,7 +686,7 @@ Makefile                                          # grows every week
 
 ## Decisions this document defers to you
 
-1. **Fact grain** (step 1.4) — the `price`-varies-within-day case, and whether `price` is in the key at all. If it is, its type is part of the decision (`DECIMAL` over `DOUBLE`). Look at the data first.
+1. ~~**Fact grain** (step 1.4)~~ — **settled 2026-08-14 by measurement.** Price stays out of the key; it's a measure. See step 1.4 for the numbers and the one-line argument.
 2. **Embedding dimension and customer-tower composition** (3.2) — pick after the baseline numbers exist.
 3. **How much transaction history becomes training positives** (4.2) — this single choice sets whether candidate generation is 40 GB or 160 GB, and therefore whether misha is single-node or multi-node.
 4. **Discount menu and budget level** (7.2) — arbitrary, so pick round numbers and say they're illustrative.
