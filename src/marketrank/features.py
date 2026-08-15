@@ -295,11 +295,36 @@ def _write_partitioned(df: DataFrame, table: str, spark: SparkSession) -> None:
         writer.partitionedBy(F.days("feature_date")).createOrReplace()
 
 
+def customer_day_spine(
+    spark: SparkSession, customers: DataFrame, start: str, end: str
+) -> DataFrame:
+    """
+    Every (customer, day) pair in [start, end] for the given customers.
+
+    Window functions only emit output for rows that EXIST, so without this the
+    feature tables contain a row for (customer, day) only where that customer
+    transacted -- and week 4 needs features for exactly the days they did not,
+    because candidates are scored on days nothing was bought.
+
+    Measured consequence of omitting it, on this build's own candidate table:
+    only 2,818 of 20,000 evaluation customers had a customer-feature row on
+    2020-08-12, so **85.6% of candidate rows joined to NULL customer features**.
+    See BUILD_NOTES step 4.2.
+    """
+    days = spark.sql(
+        f"SELECT explode(sequence(date'{start}', date'{end}', interval 1 day))"
+        " AS feature_date"
+    ).withColumn("day_index", day_index("feature_date"))
+    return customers.select("customer_id").distinct().crossJoin(F.broadcast(days))
+
+
 def build_features(
     spark: SparkSession,
     start: str | None = None,
     end: str | None = None,
     windows: tuple[int, ...] = WINDOWS,
+    customer_spine: DataFrame | None = None,
+    article_spine: DataFrame | None = None,
 ) -> dict[str, int]:
     """
     Build (or backfill) the three daily feature tables for feature days
@@ -352,8 +377,14 @@ def build_features(
 
     written: dict[str, int] = {}
     for table, df in (
-        (CUSTOMER_FEATURE_TABLE, customer_features(txn, windows=windows)),
-        (ARTICLE_FEATURE_TABLE, article_features(txn, windows=windows)),
+        (
+            CUSTOMER_FEATURE_TABLE,
+            customer_features(txn, windows=windows, spine=customer_spine),
+        ),
+        (
+            ARTICLE_FEATURE_TABLE,
+            article_features(txn, windows=windows, spine=article_spine),
+        ),
         (CROSS_FEATURE_TABLE, cross_features(txn, articles, windows=windows)),
     ):
         out = clip(df)
