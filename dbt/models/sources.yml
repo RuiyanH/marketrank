@@ -1,0 +1,19 @@
+version: 2
+
+sources:
+  # Unqualified on purpose. spark.sql.defaultCatalog=local (conf/spark-defaults.conf)
+  # is what makes `raw.transactions` resolve inside the Iceberg catalog rather
+  # than the built-in Hive one. The step 1.5 checkpoint is what verifies it.
+  - name: raw
+    schema: raw
+    description: >
+      Raw Iceberg tables loaded by src/marketrank/ingest.py. Spark targets only;
+      the CI target reads the committed seeds instead (macro raw_source).
+    loaded_at_field: _ingested_at
+    tables:
+      - name: transactions
+        description: One row per source CSV line. No key -- see step 1.4.
+      - name: articles
+        description: Current-state snapshot, no history. Not point-in-time.
+      - name: customers
+        description: Current-state snapshot, no history. Not point-in-time.

@@ -24,3 +24,12 @@ reports/*.png
 reports/*.html
 wandb/
 mlruns/
+
+# Rendered from conf/spark-defaults.conf.template by marketrank.config
+# (the warehouse path is environment-dependent; Spark does not interpolate).
+conf/spark-defaults.conf
+
+# dbt
+dbt/target/
+dbt/logs/
+dbt/dbt_packages/

@@ -224,3 +224,237 @@ there is no `dbt/` directory and no materialized `fact_transaction`. The number
 above is a property of a query over `raw.transactions`, not of a table that
 exists. Step 1.5 below records the materialized row count and the dbt uniqueness
 test result when they have actually been run.
+
+## Step 1.5 — Stand up dbt on Spark
+
+This step needed four corrections to the doc, three of them because the doc's
+design is right but incomplete about *which* consumer gets what. All four are
+below with the exact error each produced, because each one costs an hour to
+diagnose from scratch.
+
+### Correction 1 — a static `spark-defaults.conf` cannot carry the warehouse path
+
+The doc says to create `conf/spark-defaults.conf` holding, among other things,
+"the `local` catalog config". The catalog config includes
+`spark.sql.catalog.local.warehouse`, and the warehouse location is
+environment-dependent by design: `config.py` reads `MARKETRANK_WAREHOUSE`, and
+`SETUP_MISHA.md`'s `env.misha.sh` sets a different one. **Spark does not
+interpolate environment variables in `spark-defaults.conf`.** Tested directly:
+
+```
+spark.sql.catalog.local.warehouse   ${env:MARKETRANK_WAREHOUSE}
+
+-> s.conf.get(...) returns the literal string "${env:MARKETRANK_WAREHOUSE}"
+-> IllegalArgumentException: java.net.URISyntaxException:
+   Relative path in absolute URI: ${env:MARKETRANK_WAREHOUSE%7D
+```
+
+So a committed static file would have to hardcode one machine's path, which
+contradicts the runbook it is supposed to serve.
+
+**Resolution:** `conf/spark-defaults.conf.template` is committed;
+`marketrank.config.render_spark_defaults()` renders `conf/spark-defaults.conf`
+from it at import time (idempotent, rewrites only on change), and the rendered
+file is gitignored. `make render-conf` / `python -m marketrank.config` is the
+entry point for the one consumer that does not import `marketrank` — dbt. This
+keeps the doc's actual goal (one definition of the catalog, visible to both
+consumers) while letting the warehouse move per machine.
+
+### Correction 2 — dbt-spark's session has no driver bind address, and dies
+
+The doc's split-by-kind rule puts `spark.driver.bindAddress` /
+`spark.driver.host` in `get_spark()` because they are machine- and mode-
+dependent. Correct — but dbt-spark's session method never calls `get_spark()`,
+so on this laptop (hostname resolves to a stale DHCP address) `dbt build` failed
+before running a single model:
+
+```
+WARN Utils: Service 'sparkDriver' could not bind on a random free port.
+  ... io.netty.channel.AbstractChannel.bind ... make: *** [dbt] Error 2
+```
+
+**Resolution that preserves the split:** export `SPARK_LOCAL_IP=127.0.0.1` from
+the Makefile. It is the environment-level spelling of the same two settings, so
+it stays out of the committed conf file (where it would break a multi-node
+cluster) and still reaches dbt. The doc should say this; without it, step 1.5's
+checkpoint is unreachable on any machine that needs the loopback workaround —
+which is the machine the doc was written on.
+
+### Correction 3 — Iceberg has no views, so staging cannot be views
+
+The doc says staging models are views. On the Spark target every one of them
+failed:
+
+```
+ERROR creating sql view model staging.stg_articles
+  Replacing a view is not supported by catalog: local
+```
+
+Iceberg's `SparkCatalog` (1.11.0, Hadoop catalog) does not implement
+`ViewCatalog`. **Resolution: `ephemeral`.** Staging here is pure projection
+(rename + cast, no business logic), so inlining it as a CTE stores nothing and
+costs nothing. It is also better than the obvious alternative of "table on
+Spark, view on DuckDB", because that would make dev and CI materialise
+differently — the opposite of what step 1.6 wants from CI.
+
+### Correction 4 — seeds cannot build on the Spark target
+
+```
+ERROR loading seed file raw_seed.seed_articles
+  [DATATYPE_MISSING_SIZE] DataType "VARCHAR" requires a length parameter
+```
+
+dbt-spark emits unsized `varchar` for seed columns typed as strings, which Spark
+rejects. Seeds exist so CI can run without the 3.5 GB extract, so they have no
+business on the Spark target at all. **Resolution:**
+`+enabled: "{{ target.type == 'duckdb' }}"` in `dbt_project.yml`.
+
+### VERIFY — does `spark.sql.defaultCatalog=local` do the routing?
+
+**Yes.** With it set and no catalog qualification anywhere in `dbt_project.yml`
+or `sources.yml`, dbt's unqualified `marts.fact_transaction` landed in the
+Iceberg catalog:
+
+```
+SHOW NAMESPACES IN local  ->  staging, marts, raw_seed, raw
+```
+
+The fallback the doc names (fully qualifying the catalog in `dbt_project.yml`)
+was not needed. Note the flip side: because the default catalog is Iceberg,
+*everything* dbt does goes there, which is exactly how correction 3 surfaced.
+
+### Checkpoint
+
+`make dbt` (Spark/Iceberg target), from the real 31.8M-row warehouse:
+
+```
+1 of 16 OK created sql table model marts.dim_article        OK in  4.64s
+2 of 16 OK created sql table model marts.dim_customer       OK in  3.38s
+3 of 16 OK created sql table model marts.fact_transaction   OK in 59.39s
+... 13 data tests ...
+Done. PASS=16 WARN=0 ERROR=0 SKIP=0 NO-OP=0 REUSED=0 TOTAL=16
+wall clock: 2 min 09 s
+```
+
+Is it genuinely Iceberg?
+
+```
+SELECT * FROM local.marts.fact_transaction.snapshots
+  7609064981163123657  overwrite  total-records = 28583889
+
+SHOW TBLPROPERTIES local.marts.fact_transaction
+  format          iceberg/parquet
+  format-version  2
+  write.parquet.compression-codec  zstd
+```
+
+The `.snapshots` metadata table only resolves for a real Iceberg table. **PASS.**
+
+**This also discharges step 1.4's pending half:** `fact_transaction` materialised
+at **28,583,889 rows**, exactly the distinct-key count measured in 1.4, and
+`assert_fact_transaction_grain_unique` passed on the full table (31.37 s).
+
+Slowest tests on the real warehouse, for anyone budgeting the run:
+grain uniqueness 31.37 s, customer relationships 14.24 s, article relationships
+2.79 s. All referential-integrity tests pass, so every transaction's
+`article_id` and `customer_id` really is present in the dimension files.
+
+## Step 1.6 — Tests, and the second target
+
+Seeds are generated by `src/marketrank/make_seeds.py` (committed, deterministic,
+re-runnable via `make seeds`) rather than typed by hand, so they are real rows
+with real edge cases:
+
+```
+seed_transactions.csv  355 rows
+seed_customers.csv      50 rows
+seed_articles.csv       47 rows
+multi-quantity duplicate rows: 158
+customers with null age: 1
+```
+
+Doc asked for ~200 / ~50 / ~50; 355 transactions is what falls out of taking 49
+customers with 3–8 purchases each, and cutting to exactly 200 would have dropped
+half the customers. **Read the seed's 44% multi-quantity rate as a fixture
+property, not a dataset property** — it is a selection artifact of restricting to
+the 50 most popular articles, and the real rate is 10.08% (step 1.4).
+
+`tests/test_iceberg.py` builds its own five-line CSV in `tmp_path` and
+monkeypatches `config.DATA_RAW`, so it drives the *real* write path
+(declared-schema CSV read → `_ingested_at` stamp → `overwritePartitions`) with no
+dependency on the 3.5 GB extract. That is what lets it run in CI. `ingest` gained
+a `table=` parameter for the same reason — the test writes to a throwaway table
+in a `test_tmp` namespace and drops it afterwards, rather than touching the
+warehouse.
+
+Three tests, not one:
+
+1. `test_reload_is_idempotent` — the doc's test, driving two loads.
+2. `test_whole_row_diff_still_sees_the_metadata_column` — asserts
+   `assert_identical(..., ignore_cols=())` *raises*. Without it, the first test
+   would keep passing if `_ingested_at` ever stopped varying, and would then be
+   proving nothing. The step-1.3 checkpoint makes this pairing explicit, so it
+   belongs in the suite rather than in a shell transcript.
+3. `test_partition_overwrite_replaces_a_day_wholesale` — step 1.2's Think-first
+   answer as an executable claim (load 3 rows, then load a 1-row "corrections"
+   file for the same day, get 1 row). Week 9 has to change this behaviour, and
+   this is the test that will go red when it does — deliberately.
+
+**Checkpoint.**
+
+```
+make dbt-ci   ->  Done. PASS=19 WARN=0 ERROR=0 SKIP=0 TOTAL=19   in 4.5 s wall
+pytest -m spark ->  3 passed in 11.05 s
+```
+
+Under a minute, with `MARKETRANK_DATA_RAW` never read. **PASS.**
+
+## Step 1.7 — GitHub Actions
+
+`.github/workflows/ci.yml`: `pull_request` → checkout → setup-python 3.11 →
+setup-java 17 → `pip install -e ".[dev]"` → `dbt build --target ci` →
+`pytest -v`. The Spark tests run (the doc's recommended option), because gate 1's
+criterion is the PIT test and a job that skips it is not enforcing the gate.
+
+**Deviation, and it is a real gap in this build: the workflow has never
+executed.** The task brief forbids pushing to any remote, so no PR was opened,
+no runner ran, and there is no green or red check anywhere. What was actually
+done instead:
+
+- The workflow's command sequence was run locally in the same order, from a
+  shell where `MARKETRANK_DATA_RAW` was set but unused by either step.
+- **"Watch it fail once"** was performed locally. `fact_transaction` was
+  rewritten to grain (a) — one row per source row, the mistake step 1.4 rejects
+  — and the CI target went red on the grain test:
+
+  ```
+  12 of 19 FAIL 98 assert_fact_transaction_grain_unique
+           Got 98 results, configured to fail if != 0
+  Done. PASS=18 WARN=0 ERROR=1 SKIP=0 TOTAL=19
+  make exit status: 2
+  ```
+
+  Restoring the model returned it to `PASS=19 ERROR=0`. So the check *would* be
+  red, and it is red for the right reason.
+- **"The Spark tests actually ran rather than being collected and skipped"** was
+  checked with `pytest -v`:
+
+  ```
+  tests/test_iceberg.py::test_reload_is_idempotent PASSED
+  tests/test_iceberg.py::test_whole_row_diff_still_sees_the_metadata_column PASSED
+  tests/test_iceberg.py::test_partition_overwrite_replaces_a_day_wholesale PASSED
+  3 passed
+  ```
+
+  No SKIPPED lines. Note this only proves it on macOS with a Temurin 17 already
+  installed; the `setup-java` step is unverified.
+
+**Not run: anything involving GitHub.** No push, no PR, no badge. If you are
+following these notes, this is the one step you have to do yourself, and the
+first push is where `setup-java` and the runner's `pip install -e ".[dev]"` get
+their first real test.
+
+**PR discipline** is simulated with local branches: this week's steps 1.5–1.7
+were committed on `feature/week1-dbt-ci` and merged into `build/implementation`
+with `--no-ff`, so the merge structure exists in the history even though no PR
+does.
