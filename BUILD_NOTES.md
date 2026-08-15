@@ -458,3 +458,42 @@ their first real test.
 were committed on `feature/week1-dbt-ci` and merged into `build/implementation`
 with `--no-ff`, so the merge structure exists in the history even though no PR
 does.
+
+---
+
+## Step 2.0 — The dataset fact that shapes everything
+
+Nothing to build. Both consequences are written into the README's limitations
+list: the `[d − w, d − 1]` rule (date-only `t_dat`, so same-day events cannot be
+ordered and are excluded entirely) and the current-state-snapshot dimensions.
+
+## Step 2.1 — Write the leakage test first, and watch it fail
+
+**Checkpoint: both tests fail with a clear message, committed failing.**
+
+```
+E  ImportError: cannot import name 'features' from 'marketrank'
+   tests/test_pit.py:69: ImportError
+E  ImportError: cannot import name 'features' from 'marketrank'
+   tests/test_pit.py:90: ImportError
+FAILED tests/test_pit.py::test_window_excludes_same_day
+FAILED tests/test_pit.py::test_future_events_do_not_change_past_features
+2 failed in 4.03s
+```
+
+**PASS** (in the sense the step means: they fail, for the right reason, and the
+commit that adds them precedes the commit that adds `features.py`).
+
+Implementation note: `from marketrank import features` is inside each test body,
+not at module scope. At module scope the import error is a *collection* error —
+pytest reports the file as broken rather than the two tests as failing, which is
+a worse artifact for the history the step is trying to create.
+
+**Deviation, and it is forced by this very step.** The doc specifies
+`daily_customer_agg(spark)` in step 2.2 — a function that takes a session and
+reads the warehouse. A function shaped like that cannot be driven by "a tiny
+hand-built DataFrame", which is what step 2.1 requires. The two steps contradict
+each other. Resolved in favour of 2.1: the aggregate and window functions take
+**DataFrames**, and a separate `build_features(spark, ...)` is the only thing
+that touches tables. That is also the shape that makes the backfill parameter of
+step 2.4 natural, so the doc's own later step wants it too.
