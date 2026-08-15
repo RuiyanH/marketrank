@@ -101,3 +101,60 @@ exercised locally against the real warehouse**, not in CI — CI has a JVM but n
 data, so the seeds stand in for the 3.5 GB extract.
 
 That is the precise claim. "My pipeline is tested in CI" is not.
+
+---
+
+## Measured numbers (reduced scale where marked)
+
+All produced by commands in this repo. Full provenance in
+[`BUILD_NOTES.md`](BUILD_NOTES.md); anything not measured says "not run" there
+rather than carrying an estimate.
+
+### Data layer — full scale
+
+| | |
+|---|---|
+| Transactions loaded | 31,788,324 over 734 days (2018-09-20 → 2020-09-22), 49.3 s |
+| Articles / customers | 105,542 / 1,371,980 |
+| `fact_transaction` | 28,583,889 basket lines; multi-quantity rate 10.08% |
+| dbt on Spark/Iceberg | 16 models + tests green in 2 min 09 s |
+| dbt on DuckDB (CI) | 19 nodes green in 4.5 s, no warehouse, no CSV |
+| Feature tables | 9,080,179 + 7,443,545 + 19,980,389 rows, full build 367.8 s |
+| 30-day backfill | 51.5 s, 1,960,023 rows, bit-identical to the full run |
+
+**Gate 1 (point-in-time leakage) passed**, and both tests were mutation-checked:
+flipping the window's upper bound from `-1` to `0` fails test 1; a global mean
+fitted over all time fails test 2.
+
+### Retrieval — `val_tune`, 20,000-customer cohort, 70,715 true pairs
+
+| | recall@12 | recall@100 | recall@500 |
+|---|---|---|---|
+| repurchase | 2.32% | 3.31% | 3.39% |
+| recent popularity | 1.22% | 6.25% | 17.98% |
+| baseline union | 2.51% | **6.97%** | 18.99% |
+| two-tower (reduced scale) | 1.21% | **5.53%** | 15.15% |
+
+**The two-tower does not beat the baseline union**, so step 3.2's checkpoint is
+recorded as failed rather than tuned until it passed. The `logQ` correction is
+worth 17x on recall@500 (11.22% with, 0.67% without) — and the run without it has
+the *lower* training loss.
+
+Candidate set (three sources, ~105 per customer): **recall ceiling 7.475%**.
+That is a hard cap on end-to-end recall, and it says stage 1 is this build's
+bottleneck.
+
+### ANN, at this catalog size
+
+105,543 vectors × 64 dims = 27.0 MB. Single-query exact search is 1.26 ms p50 /
+1.82 ms p95; HNSW at ef=200 is 0.16 ms p50 / 0.27 ms p95 at 98.6% index recall.
+**ANN is not needed here for speed** — it earns its place in the serving path's
+tail latency, not in its median, and at 105k items not in the architecture story
+at all.
+
+### Candidate-generation sizing
+
+27,155,032 train-slice positives × 100 candidates × 37 columns ≈ **950 GB
+uncompressed, ~110 GB at parquet+zstd** — inside the spec's 40–160 GB estimate,
+and the reason that job is the one genuinely cluster-shaped step. This build ran
+2,091,944 rows of it (0.077%) on a laptop.
