@@ -757,3 +757,180 @@ and MacPorts prefixes, so `import lightgbm` fails with `Library not loaded:
 from `config.py` the way `SPARK_CONF_DIR` is — it has to be exported, and the
 Makefile does it. A `ctypes.CDLL` preload of torch's libomp does **not** work;
 tried and recorded here so nobody tries it twice.
+
+---
+
+## Clarification on step 2.4's DECIMAL change (it is not a step-1.4 revision)
+
+To remove any ambiguity: the `DOUBLE` -> `DECIMAL(12,10)` change in step 2.4 is
+about the **feature pipeline's money measures** (`spend`, `avg_price` in
+`features.py`), and it is fully landed in commit `edfb37c` with the backfill
+checkpoint re-run and passing.
+
+**Step 1.4's grain decision is unchanged**: `price` is still NOT in the
+`fact_transaction` key, and `dbt/models/marts/fact_transaction.sql` is untouched
+by this. The `DECIMAL(10,8)` measurement in step 1.4 was a "what if we had kept
+price in the key" check, and its answer (no collisions) is recorded there as
+context, not as a change. Two different columns, two different reasons, one
+shared lesson about floats.
+
+---
+
+## Step 3.2 — The two towers
+
+### CHECKPOINT: **FAILED.** The two-tower does not beat the baseline union.
+
+The doc's checkpoint is "Recall@100 on `val_tune` beats the baseline union by a
+margin you'd defend." Measured, on the identical evaluation cohort and the
+identical denominator (20,000 sampled `val_tune` customers, **70,715** true
+(customer, article) pairs):
+
+| | recall@12 | recall@100 | recall@500 |
+|---|---|---|---|
+| repurchase | 2.322% | 3.309% | 3.394% |
+| recent popularity | 1.222% | 6.250% | 17.978% |
+| **baseline union** | **2.511%** | **6.967%** | **18.993%** |
+| **two-tower (best epoch)** | 1.209% | **5.531%** | 15.148% |
+
+**The two-tower loses to the union on every cutoff, and loses to popularity
+alone at 100 and 500.** It is not close enough to call a tie: recall@100 is
+5.531% against 6.967%, i.e. **21% worse**, in the direction the checkpoint was
+written to catch.
+
+Per the doc, this result is reportable as-is and it is what the step is for —
+"a two-tower model that doesn't beat them is a two-tower model you shouldn't
+ship", and finding that out in week 3 is the cheap version. **No number here was
+tuned until it won.** What follows is what was tried, in the order it was tried.
+
+### Run configuration — REDUCED SCALE, and here is exactly how
+
+| | Full-scale intent | What actually ran |
+|---|---|---|
+| Training positives | all `train`-slice purchases (~28M) | **2,900,248** rows |
+| Customer cohort | all 1,371,980 | **300,000** sampled by hash |
+| Training window | 2018-09-20 .. 2020-08-11 | **2020-02-14 .. 2020-08-11** |
+| Eval customers | all `val_tune` buyers | **20,000** sampled by hash |
+| Embedding dim | 64 or 128 | **64** |
+| Epochs | to convergence | **8**, best at epoch 4 |
+| Device | GPU | Apple **MPS** |
+
+Wall clock: export 185.5 s, training 862.2 s for 8 epochs (~90 s/epoch)
+including a per-epoch `val_tune` evaluation (~11 s each).
+
+`val_tune` is the slice `splits.py` allocates for early stopping, so selecting
+epoch 4 on it is the intended use, not a leak. `val_calib`, `ope_env`, `test`
+and `holdout` were not read.
+
+Per-epoch recall@100: 4.85, 5.09, 5.27, 5.40, **5.53**, 5.49, 5.51, 5.48 — it
+plateaus by epoch 4 and does not trend up. More epochs are not the missing
+ingredient; a 20-epoch run on the smaller 479k-row set was *worse* than a
+5-epoch run on it (11.2% vs 12.9% recall@500), which is overfitting.
+
+### The logQ correction — measured, and the effect is enormous
+
+Ablation on the 50,000-customer / 479,587-row set, 20 epochs each, everything
+else identical:
+
+| | final loss | recall@12 | recall@100 | recall@500 |
+|---|---|---|---|---|
+| **with logQ** | 6.2530 | 0.822% | 4.054% | **11.220%** |
+| without logQ | 6.2025 | 0.013% | 0.105% | **0.669%** |
+
+**A 17x difference in recall@500, and the run without logQ has the *lower*
+training loss.** That pairing is the whole lesson in one table: in-batch
+negatives make popular articles appear as negatives in proportion to their
+popularity, the model learns to push them down, the softmax loss is perfectly
+happy about it, and retrieval — which on this dataset is dominated by popular
+articles — collapses. Subtracting `log(sampling_prob(article))` from the logits
+is three lines and it is the difference between a model and rubble.
+
+This is a stronger result than the doc's framing ("biased toward popularity")
+suggests, and it is worth having the number rather than the adjective.
+
+### Two bugs found, both silent, both worth naming
+
+1. **logQ applied in the wrong units.** First implementation was
+   `(u·v − log q) / T`. The correction belongs in logit units, *after*
+   temperature scaling: `(u·v)/T − log q`. With `T = 0.05`, dividing a
+   `log q ≈ −11` term by T produces a ±230 offset that swamps the dot products
+   entirely. Symptom: training loss of **49** and recall@500 of **3.5%**. It
+   trains, it converges, and it is nonsense.
+2. **Off-by-one between `article_idx` and array position.** `article_idx`
+   starts at 1 (0 is the padding slot), so a densely packed catalog array of
+   105,542 rows is shifted by one against every index in the data — and, worse,
+   `topk()` returns positions that are one less than the `article_idx` the
+   ground truth is keyed on. **Recall goes to approximately zero and nothing
+   raises.** `load_articles()` now returns arrays indexed *by* `article_idx`
+   with row 0 reserved, and `recall_at` masks column 0. If you re-implement
+   this, that alignment is the first thing to assert.
+
+Both of these are the same genre as the PIT window bound: one character or one
+index, no error, plausible-looking output. The difference is that week 2 had a
+test for its version and week 3 did not.
+
+### What I would change next, and why I did not
+
+The doc says "if it doesn't [beat the baseline], the problem is almost always
+negatives or the item-average feature, not the architecture". Both remain
+plausible and neither was resolved:
+
+- **Negatives.** In-batch negatives at batch 1024 sample ~1000 negatives from
+  the *positive* distribution. Mixing in uniformly-sampled negatives from the
+  full 105k catalog is the standard next move, and it is a ~10-line change.
+- **The item-average.** `recent_articles` is capped at the last 20 distinct
+  articles in `[d−90, d−1]`, and the median customer has 30 distinct prior
+  articles over their whole history. That cap may be discarding most of the
+  signal for exactly the heavy customers who generate most of the purchases.
+- **Scale.** 2.9M positives over 6 months is ~10% of the available training
+  data. The trend across the 479k-row and 2.9M-row runs was up (12.9% -> 15.1%
+  recall@500), so more data plausibly closes some of the 3.8-point gap.
+
+I stopped rather than continue tuning because the brief's rule is that a smaller
+amount finished honestly beats coverage bought by weakening a checkpoint, and
+because week 4 onward is built on top of this. **Anyone continuing from here
+should treat step 3.2 as open, not done.**
+
+## Step 3.3 — The ANN index
+
+Measured on the 105,543 x 64 article matrix produced by the model above (the
+index question is independent of whether the vectors are any good — it is about
+search, not relevance). CPU for both sides, so the comparison is like with like;
+`hnswlib` has no GPU path.
+
+```
+vectors: 105,543 x 64 float32 = 27.0 MB
+HNSW build (M=32, ef_construction=200): 9.33 s
+
+BATCHED, 2,000 queries at once, k=100          ms/query   index recall vs exact
+  exact (one matmul)                             0.147           1.000
+  HNSW ef=100                                    0.0247          0.9487
+  HNSW ef=200                                    0.0323          0.9862
+  HNSW ef=400                                    0.0824          0.9958
+
+SINGLE QUERY, 500 queries one at a time, k=100
+  exact           p50 1.259 ms   p95 1.818 ms
+  HNSW ef=200     p50 0.163 ms   p95 0.270 ms
+```
+
+"Index recall" is agreement with exact search, **not** recommendation recall.
+Conflating the two is how an ANN section stops meaning anything.
+
+**The doc is right and the numbers say so plainly: ANN is not needed here for
+speed.** Exact inner-product search over the whole catalog is 1.26 ms per
+one-off query and 0.147 ms amortized. The defensible sentence, with this build's
+measured values:
+
+> At 105k items exact search is 1.26 ms p50 / 1.82 ms p95 per query and HNSW is
+> 0.16 ms p50 / 0.27 ms p95 at 98.6% index recall — an 7.7x median speedup on a
+> stage that was already sub-2 ms. The index earns its place in the serving
+> path's tail latency, not in its median, and at 105k items it does not earn a
+> place in the architecture story at all.
+
+Note also that the batched exact number (0.147 ms) is only 6x slower than
+batched HNSW, because a 2,000 x 105,543 x 64 matmul is exactly what BLAS is for.
+The gap opens up at single-query latency, which is what a serving path actually
+sees — worth knowing which of the two numbers you are quoting.
+
+What changes at 10M items: the exact matmul is 95x more work and the vectors are
+2.6 GB, so it stops fitting comfortably in cache and the single-query cost goes
+to ~100 ms. That is where the index stops being decoration.
