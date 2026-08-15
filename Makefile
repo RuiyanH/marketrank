@@ -26,7 +26,7 @@ export SPARK_LOCAL_IP := 127.0.0.1
 TORCH_LIB := $(CURDIR)/.venv/lib/python3.11/site-packages/torch/lib
 export DYLD_LIBRARY_PATH := $(TORCH_LIB)
 
-.PHONY: help render-conf load-raw seeds dbt dbt-ci test test-fast clean-dbt
+.PHONY: help render-conf load-raw seeds dbt dbt-ci features twotower-data candidates test test-fast clean-dbt
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -46,6 +46,12 @@ dbt: render-conf ## Build the dimensional model on Spark/Iceberg
 
 dbt-ci: ## Build the same models and tests on DuckDB over the seeds
 	cd dbt && $(CURDIR)/$(DBT) build --target ci
+
+features: render-conf ## Build/backfill the PIT feature tables
+	$(PY) -m marketrank.features $(START) $(END)
+
+twotower-data: render-conf ## Export the two-tower training set to artifacts/
+	$(PY) -m marketrank.retrieval.dataset $(COHORT)
 
 test: render-conf ## Full pytest suite, Spark tests included
 	.venv/bin/pytest -q
