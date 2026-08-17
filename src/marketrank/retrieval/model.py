@@ -85,8 +85,20 @@ def pick_device() -> torch.device:
 
 
 class ArticleTower(nn.Module):
-    def __init__(self, vocab_sizes: dict[str, int], dim: int = EMB_DIM):
+    """
+    Id embedding + five static categorical embeddings, and from R.2 optionally
+    the article's rolling volume features.
+
+    `n_numeric > 0` is what makes the article vector TIME-VARYING, which is the
+    whole point of R.2 and also its cost: the index has to be re-exported as of
+    the scoring day rather than once ever.
+    """
+
+    def __init__(
+        self, vocab_sizes: dict[str, int], dim: int = EMB_DIM, n_numeric: int = 0
+    ):
         super().__init__()
+        self.n_numeric = n_numeric
         self.id_emb = nn.Embedding(vocab_sizes["article_id"], dim, padding_idx=0)
         self.cat_embs = nn.ModuleList(
             [
@@ -94,15 +106,28 @@ class ArticleTower(nn.Module):
                 for c in ds.ARTICLE_CATEGORICALS
             ]
         )
-        width = dim + 16 * len(ds.ARTICLE_CATEGORICALS)
+        width = dim + 16 * len(ds.ARTICLE_CATEGORICALS) + n_numeric
         self.mlp = nn.Sequential(
             nn.Linear(width, HIDDEN), nn.ReLU(), nn.Linear(HIDDEN, dim)
         )
 
-    def forward(self, art_idx: torch.Tensor, cats: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        art_idx: torch.Tensor,
+        cats: torch.Tensor,
+        numeric: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         parts = [self.id_emb(art_idx)]
         for i, emb in enumerate(self.cat_embs):
             parts.append(emb(cats[:, i]))
+        if self.n_numeric:
+            if numeric is None:
+                raise ValueError(
+                    "article tower was built with volume features but none were "
+                    "passed -- a silently zero-filled article vector is exactly "
+                    "the failure R.2 exists to fix"
+                )
+            parts.append(numeric)
         return Fn.normalize(self.mlp(torch.cat(parts, dim=-1)), dim=-1)
 
 
@@ -150,9 +175,15 @@ class CustomerTower(nn.Module):
 
 
 class TwoTower(nn.Module):
-    def __init__(self, vocab_sizes: dict[str, int], n_numeric: int, dim: int = EMB_DIM):
+    def __init__(
+        self,
+        vocab_sizes: dict[str, int],
+        n_numeric: int,
+        dim: int = EMB_DIM,
+        n_article_numeric: int = 0,
+    ):
         super().__init__()
-        self.article = ArticleTower(vocab_sizes, dim)
+        self.article = ArticleTower(vocab_sizes, dim, n_article_numeric)
         self.customer = CustomerTower(vocab_sizes, n_numeric, self.article.id_emb, dim)
 
 
@@ -192,7 +223,35 @@ def load_train(dirpath: Path = ds.DATASET_DIR):
         if lst:
             k = min(len(lst), ds.RECENT_K)
             recent[i, :k] = lst[:k]
-    return dict(article=art, recent=recent, age=age, cats=cats, numeric=numeric)
+    out = dict(article=art, recent=recent, age=age, cats=cats, numeric=numeric)
+    # day_index drives R.2's recency weighting; article volume is R.2's article
+    # tower input. Both are optional so an older export still loads.
+    if "day_index" in tbl.column_names:
+        out["day_index"] = tbl.column("day_index").to_numpy(
+            zero_copy_only=False
+        ).astype(np.int64)
+    if all(c in tbl.column_names for c in ds.ARTICLE_NUMERIC):
+        out["art_numeric"] = np.stack(
+            [
+                tbl.column(c).to_numpy(zero_copy_only=False).astype(np.float32)
+                for c in ds.ARTICLE_NUMERIC
+            ],
+            axis=1,
+        )
+    return out
+
+
+def _dense_by_idx(idx: np.ndarray, values: np.ndarray, size: int) -> np.ndarray:
+    """
+    Scatter `values` into an array addressed BY `idx`, row 0 left zeroed.
+
+    One function so the alignment rule has one home. `article_idx` starts at 1
+    because 0 is the padding slot; a densely-packed array is off by one against
+    every index in the data and makes recall approximately zero without raising.
+    """
+    dense = np.zeros((size, values.shape[1]), dtype=values.dtype)
+    dense[idx] = values
+    return dense
 
 
 def load_articles(dirpath: Path = ds.DATASET_DIR):
@@ -217,12 +276,33 @@ def load_articles(dirpath: Path = ds.DATASET_DIR):
     )
     ids = tbl.column("article_id").to_pylist()
     size = int(idx.max()) + 1
-    dense_cats = np.zeros((size, cats.shape[1]), dtype=np.int64)
-    dense_cats[idx] = cats
+    dense_cats = _dense_by_idx(idx, cats, size)
     dense_ids = [""] * size
     for i, a in zip(idx, ids):
         dense_ids[i] = a
     return np.arange(size, dtype=np.int64), dense_cats, dense_ids
+
+
+def load_article_volume(dirpath: Path = ds.DATASET_DIR) -> np.ndarray | None:
+    """
+    The catalog's rolling volume features, **indexed by article_idx**, or None
+    if this export predates R.2.
+
+    Same alignment contract as `load_articles`, via the same helper: row 0 is
+    the padding slot and holds zeros.
+    """
+    tbl = _read_parquet(dirpath / "articles")
+    if not all(c in tbl.column_names for c in ds.ARTICLE_NUMERIC):
+        return None
+    idx = tbl.column("article_idx").to_numpy(zero_copy_only=False).astype(np.int64)
+    vals = np.stack(
+        [
+            tbl.column(c).to_numpy(zero_copy_only=False).astype(np.float32)
+            for c in ds.ARTICLE_NUMERIC
+        ],
+        axis=1,
+    )
+    return _dense_by_idx(idx, vals, int(idx.max()) + 1)
 
 
 def load_eval(dirpath: Path = ds.DATASET_DIR):
@@ -284,7 +364,28 @@ def train(
     device: torch.device | None = None,
     verbose: bool = True,
     eval_each_epoch: tuple | None = None,
+    checkpoint_path: Path | None = None,
+    select_metric: str = "recall_at_100",
+    n_uniform: int = 0,
+    recency_half_life: float = 0.0,
+    article_volume: bool = False,
 ):
+    """
+    Train the two towers with in-batch sampled softmax.
+
+    `checkpoint_path` saves the state dict of the BEST epoch by `select_metric`,
+    not the last. Week 3 did neither -- it returned the final-epoch model and
+    reported the best epoch's number, so `artifacts/twotower/model.pt` was
+    epoch 7 (recall@100 5.481%) while the headline was epoch 4's 5.531%. The
+    two are only 0.05 points apart here, which is exactly why it went unnoticed
+    for a month. See BUILD_NOTES, recovery preamble.
+    """
+    # Accepted here so the CLI and the sbatch are stable across R.1-R.4, but a
+    # parameter that is plumbed and inert is precisely the class of silent bug
+    # this build keeps finding. Each one raises until its step implements it.
+    if n_uniform:
+        raise NotImplementedError("uniform negatives arrive in step R.3")
+
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
     device = device or pick_device()
@@ -294,8 +395,46 @@ def train(
     vs = vocab_sizes(dirpath)
     n_numeric = tr["numeric"].shape[1]
 
-    model = TwoTower(vs, n_numeric, dim).to(device)
+    # R.2 -- the article tower's volume features. The catalog-wide matrix is what
+    # scoring uses; the per-row training values come from the train table, which
+    # carries each positive's article volume as of ITS OWN day.
+    art_vol_all = load_article_volume(dirpath) if article_volume else None
+    if article_volume:
+        if art_vol_all is None or "art_numeric" not in tr:
+            raise ValueError(
+                "article_volume=True but the export has no article volume "
+                "columns -- re-run the export with --article-volume"
+            )
+    art_vol_t = (
+        torch.tensor(art_vol_all, dtype=torch.float32, device=device)
+        if art_vol_all is not None
+        else None
+    )
+    n_art_numeric = art_vol_t.shape[1] if art_vol_t is not None else 0
+
+    model = TwoTower(vs, n_numeric, dim, n_article_numeric=n_art_numeric).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
+
+    # R.2 -- recency weighting. A 2019 purchase should not pull the embeddings
+    # as hard as last week's: weight = 0.5 ** (age_in_days / half_life),
+    # normalised to mean 1 so the effective learning rate does not move with the
+    # half-life and confound the ablation.
+    if recency_half_life:
+        if "day_index" not in tr:
+            raise ValueError(
+                "recency weighting needs day_index in the train export; re-export"
+            )
+        age_days = tr["day_index"].max() - tr["day_index"]
+        w = np.power(0.5, age_days / float(recency_half_life)).astype(np.float32)
+        w = w / w.mean()
+        sample_w = torch.tensor(w, device=device)
+        if verbose:
+            print(
+                "RECENCY half_life=%.1f  weight p05/p50/p95 = %.4f / %.4f / %.4f"
+                % (recency_half_life, *np.percentile(w, [5, 50, 95]))
+            )
+    else:
+        sample_w = None
 
     # logQ correction. sampling_prob(a) is the article's empirical frequency
     # among the positives, which is exactly its probability of turning up as an
@@ -309,6 +448,7 @@ def train(
 
     n = len(tr["article"])
     history = []
+    best = {"epoch": None, select_metric: float("-inf")}
     for ep in range(epochs):
         perm = rng.permutation(n)
         total, nb, t0 = 0.0, 0, time.time()
@@ -321,7 +461,15 @@ def train(
             arts = torch.tensor(tr["article"][b], device=device)
 
             u = model.customer(recent, age, cats, numeric)          # (B, d)
-            v = model.article(arts, art_cats_t[arts])               # (B, d)
+            # The positive's article volume is as of the EVENT's day, taken from
+            # the train row -- not from the catalog matrix, which is as of the
+            # scoring day and would leak the future into training.
+            art_num = (
+                torch.tensor(tr["art_numeric"][b], device=device)
+                if article_volume
+                else None
+            )
+            v = model.article(arts, art_cats_t[arts], art_num)      # (B, d)
 
             # Subtract the log sampling probability of the COLUMN article, after
             # temperature scaling. Without it the popular items in the batch are
@@ -333,7 +481,12 @@ def train(
             )
 
             target = torch.arange(len(b), device=device)
-            loss = Fn.cross_entropy(logits, target)
+            if sample_w is None:
+                loss = Fn.cross_entropy(logits, target)
+            else:
+                per_row = Fn.cross_entropy(logits, target, reduction="none")
+                bw = sample_w[torch.tensor(b, device=device)]
+                loss = (per_row * bw).sum() / bw.sum()
 
             opt.zero_grad()
             loss.backward()
@@ -345,20 +498,36 @@ def train(
             # val_tune is the slice allocated for early stopping (splits.py), so
             # selecting the epoch on it is the intended use, not a leak.
             ev, truth = eval_each_epoch
-            rec.update(recall_at(model, ev, truth, art_ids_t, art_cats_t, device=device))
+            rec.update(
+                recall_at(
+                    model, ev, truth, art_ids_t, art_cats_t,
+                    device=device, art_numeric=art_vol_t,
+                )
+            )
             model.train()
         history.append(rec)
         if verbose:
             print("EPOCH", json.dumps(rec))
+        # Keep the BEST epoch, not the last one. val_tune is the slice splits.py
+        # allocates for early stopping, so selecting on it is the intended use.
+        if select_metric in rec and rec[select_metric] > best[select_metric]:
+            best = {"epoch": ep, select_metric: rec[select_metric]}
+            if checkpoint_path is not None:
+                checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+                torch.save(model.state_dict(), checkpoint_path)
+    if verbose and best["epoch"] is not None:
+        print("BEST", json.dumps(best))
     return model, history, (art_ids_t, art_cats_t)
 
 
 @torch.no_grad()
-def article_matrix(model: TwoTower, art_ids_t, art_cats_t, chunk: int = 8192):
+def article_matrix(model: TwoTower, art_ids_t, art_cats_t, chunk: int = 8192, art_numeric=None):
     model.eval()
     out = []
     for s in range(0, len(art_ids_t), chunk):
-        out.append(model.article(art_ids_t[s : s + chunk], art_cats_t[s : s + chunk]))
+        sl = slice(s, s + chunk)
+        num = art_numeric[sl] if art_numeric is not None else None
+        out.append(model.article(art_ids_t[sl], art_cats_t[sl], num))
     return torch.cat(out, dim=0)
 
 
@@ -389,6 +558,7 @@ def recall_at(
     ns: tuple[int, ...] = (12, 100, 500),
     device: torch.device | None = None,
     chunk: int = 512,
+    art_numeric=None,
 ) -> dict:
     """
     Exact top-N by inner product over the whole catalog, chunked over customers.
@@ -397,7 +567,7 @@ def recall_at(
     baselines.py uses, so the two numbers are comparable.
     """
     device = device or pick_device()
-    V = article_matrix(model, art_ids_t, art_cats_t)             # (A, d)
+    V = article_matrix(model, art_ids_t, art_cats_t, art_numeric=art_numeric)  # (A, d)
     U = customer_matrix(model, ev, device)                       # (C, d)
     maxn = max(ns)
     hits = {n: 0 for n in ns}

@@ -1322,3 +1322,174 @@ neither known bug, and the table above says so honestly rather than implying
 four tests catch four bugs.
 
 The plan document is not edited — this is recorded here, per the standing rule.
+
+## Step R.1 — Kill the confound: spine rebuild, then the identical eval
+
+**Full scale, and here is exactly what "full scale" means.** The spine covers
+**all 1,371,980 customers and all 105,542 articles** on the scoring day, unioned
+with the natural transaction-day rows. It is not a dense customer × calendar
+spine, and that is a modelling decision rather than a laptop concession: a dense
+spine over the whole log is 1,371,980 × 734 = **1.006 billion** (customer, day)
+rows before a single feature is attached, and it is never the right object at any
+scale. Features are needed on the days something is *scored*, and that set is
+small. The cost is linear — ~1.37M customer rows and ~105k article rows per
+scoring day — so extending this to the whole 14-day `val_tune` window is a
+decision about disk, not about correctness.
+
+Scoring day: **2020-08-12** (`day_index` 692), `val_tune`'s first day, which is
+the day every candidate and every recall number in this build is measured on.
+
+```
+REBUILD_SECONDS 318.8      (full rebuild, 734 source days, 8 cores, local[*])
+feature_customer_daily   9,080,179 -> 10,434,260   (+1,354,081)
+feature_article_daily    7,443,545 ->  7,537,467   (+   93,922)
+feature_cross_daily     19,980,389 -> 19,980,389   (unchanged — no cross spine)
+```
+
+The deltas are exactly right and worth checking rather than trusting:
+1,371,980 − 1,354,081 = **17,899** customers already had a row on day 692 (they
+transacted that day), and 105,542 − 93,922 = **11,620** articles likewise.
+
+### Checkpoint part 1 — coverage, via R.0's test-2 function at full scale
+
+```
+COVERAGE feature_customer_daily  1,371,980 / 1,371,980   100.00%
+COVERAGE feature_article_daily     105,542 /   105,542   100.00%
+EVAL_COHORT_COVERAGE (the 20,000)   20,000 /    20,000   100.00%
+```
+
+**14.09% → 100.00%** on the eval cohort. The same `features.feature_coverage`
+call R.0's test 2 makes, so the test really is the audit.
+
+### Checkpoint part 2 — the spine adds rows and changes no value, proven
+
+Not asserted from the reduced-scale proof — measured at full scale against the
+**pre-rebuild Iceberg snapshot**, which is what `checks.read_snapshot` is for:
+
+```
+feature_customer_daily  (snapshot 7728130163272976666)
+  only in BEFORE (a changed or lost value):          0
+  only in AFTER  (rows the spine added):     1,354,081
+feature_article_daily   (snapshot 5022465635284524252)
+  only in BEFORE:                                    0
+  only in AFTER:                                93,922
+```
+
+Whole-row comparison over 9.08M and 7.44M rows. Zero rows changed. This is the
+property that makes the rebuild a *measurement* rather than an improvement.
+
+### THE FINDING OF THIS STEP — the confound was eval-time only, and that was checkable in advance
+
+The training positives sit on days the customer **did** transact, so
+`daily_customer_agg` always produced a row for them and the window layer always
+emitted one. Measured on the pre-rebuild snapshot, over the reduced run's own
+training window:
+
+```
+TRAIN_SIDE_COVERAGE_BEFORE_REBUILD  2,158,250 / 2,158,250 = 100.0000%
+```
+
+**The training set was never affected by the spine bug.** Only the eval side
+was, because that is the only place the model is scored on a day nothing was
+bought. So R.1's two arms are not symmetric, and the plan's framing —
+"re-eval isolates eval-time contamination; the retrain isolates training-time
+contamination" — resolves to: there was no training-time contamination to
+isolate, and this number is why.
+
+What the eval cohort's inputs actually looked like, dirty vs clean:
+
+```
+cohort identical: True   (same 20,000 customer_ids, same order)
+eval rows with ALL-ZERO rolling features:  17,744 (88.72%)  ->  5,125 (25.62%)
+eval rows whose numeric features changed:  12,619 (63.09%)
+```
+
+The residual 25.62% is not a bug: those are customers with genuinely no activity
+in the prior 90 days, now correctly zero-*filled* rather than absent. Note the
+dirty figure is 88.72% all-zero against the 85.91% *missing* reported in step
+4.2 — the gap is customers who had a row whose windows were all zero anyway.
+
+### The re-export, and the proof that the cohort did not move
+
+```
+EXPORT_SECONDS 156.0
+EXPORT n_articles            105,542
+EXPORT n_train_rows        2,900,248
+EXPORT n_eval_customers       20,000
+EXPORT n_eval_truth_pairs     70,715
+```
+
+**2,900,248 and 70,715 are the reference build's numbers to the row.** The
+cohort and the denominator are hash-derived and feature-independent, so this is
+the confirmation that every comparison below is on identical ground rather than
+an assertion that it is.
+
+### Checkpoint part 3 — the two arms, measured
+
+Both arms on the identical cohort (20,000 customers / 70,715 pairs), exact
+top-N over the full 105,542-article catalog.
+
+| | r@12 | r@100 | r@500 |
+|---|---|---|---|
+| wk3 model (epoch 7), **dirty** features — what was on disk | 1.1327% | 5.4812% | 15.0039% |
+| wk3 headline (epoch 4, never saved), dirty | 1.2091% | **5.5307%** | 15.1481% |
+| **arm A** — wk3 epoch-7 model, **clean** features | 1.2105% | **5.6438%** | 15.5087% |
+| **arm B** — clean retrain, best epoch 5 of 8 | 1.2501% | **5.7852%** | 15.6077% |
+| baseline union (the bar) | 2.511% | **6.967%** | 18.993% |
+
+`REBUILD_SECONDS 318.8`, `EXPORT_SECONDS 156.0`, `TRAIN_SECONDS 793.2`.
+
+Arm A was re-measured from the checkpoint rather than carried over: 5.643781%,
+which reproduces the first arm-A run to the digit. Arm B's per-epoch recall@100
+is `4.9523, 5.2337, 5.5123, 5.6820, 5.7074, 5.7852, 5.6961, 5.7032` against
+week 3's `4.8519, 5.0866, 5.2719, 5.4048, 5.5307, 5.4939, 5.5066, 5.4812` —
+higher at every epoch, and still plateauing by epoch 5.
+
+### What R.1 actually bought, stated conservatively
+
+**The spine fix is worth about +0.3 points of recall@100 and the tower still
+loses to the baseline union by ~1.2 points.** Against the headline the plan
+quotes (5.5307%), arm B is +0.25; against what was actually on disk (5.4812%),
++0.30. The gap to 6.967% closes from 1.486 to 1.182 — roughly **20% of the
+shortfall**, on the most generous reading.
+
+So hypothesis 1 is **substantially demoted, not eliminated**: the confound was
+real, measurable, and small. Whatever explains the remaining 1.18 points is not
+the spine. R.2 and R.3 now carry the argument, which is what R.1 existed to
+establish.
+
+### THE METHODOLOGICAL PROBLEM R.1 EXPOSED — read this before trusting any later delta
+
+Arm A and arm B disagree at the same epoch index. Arm A is the week-3 epoch-7
+model on clean features: **5.6438%**. Arm B's own epoch 7, also clean:
+**5.7032%**. If the spine changed nothing on the training side — and
+`TRAIN_SIDE_COVERAGE_BEFORE_REBUILD` says it changed nothing, 100% coverage
+before the rebuild, zero values altered — then those two models should be the
+same model and those two numbers should be equal. They differ by **0.059
+points**, and the epoch-7 training losses differ too: 6.5935 (wk3) against
+6.5957 (arm B).
+
+The train export reproduced 2,900,248 rows exactly and `seed=0` in both, so the
+divergence is not the data. Two candidates remain: week 3's run used a slightly
+different configuration, or training is not bit-reproducible on this device
+(MPS reductions are order-sensitive). **The first is untestable from the
+artifacts** — week 3's `history.json` is a bare list of per-epoch metrics with no
+argument vector recorded, which is precisely the gap `train_towers.py` closes by
+writing `args` into every `metrics.json`.
+
+Either way the consequence is the same and it governs the rest of the ladder:
+
+> **There is a non-zero run-to-run variance of unknown magnitude, and it is at
+> least ~0.06 points of recall@100. Until it is measured, no R.2/R.3 delta
+> smaller than it can be attributed to the change that was made.**
+
+R.2's article-volume features and R.3's uniform negatives are both expected to
+move recall by more than that — but "expected" is not "measured", and an
+ablation ladder whose rungs are inside the noise is exactly the kind of
+flattering artifact this project keeps refusing to produce. So a step is
+inserted before R.2, as a deviation from the plan:
+
+**R.1b — measure the noise floor.** Re-run the arm-B configuration unchanged at
+seeds 1 and 2. The spread across seeds 0/1/2 is the resolution of every
+comparison that follows, and it gets quoted next to every later number rather
+than assumed away.

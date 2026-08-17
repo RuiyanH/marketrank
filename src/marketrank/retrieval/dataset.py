@@ -51,6 +51,26 @@ CUSTOMER_NUMERIC = [
     for m in ("n_txn", "n_articles", "spend", "avg_price")
 ]
 
+# Step R.2 -- the same rolling aggregates, article side, fed to the ARTICLE
+# tower. These already existed from week 2 and were simply never wired in.
+#
+# This is the fix with the highest prior in the recovery plan, and the reason is
+# an information asymmetry rather than a modelling idea: the popularity baseline
+# that beat the tower sees recent transaction volume, and the article tower was
+# an id plus five STATIC categorical embeddings -- structurally unable to
+# represent "trending now" on a fast-fashion dataset where the measured
+# short-horizon signal is trend rather than identity (exact-article repurchase
+# ceiling 3.36% against 64.34% at product_type_no; step 3.1).
+#
+# THE COST, STATED UP FRONT: this makes the article vector time-varying. The
+# article index stops being exportable once and has to be re-exported as of the
+# scoring date, and the week-6 serving path inherits exactly that cost.
+ARTICLE_NUMERIC = [
+    f"art_{m}_{w}d"
+    for w in ft.WINDOWS
+    for m in ("n_txn", "n_customers", "spend", "avg_price")
+]
+
 AGE_BUCKETS = [20, 25, 30, 35, 40, 50, 60, 70]
 
 
@@ -108,14 +128,61 @@ def age_bucket(col: str = "age"):
     return e.otherwise(F.lit(len(AGE_BUCKETS) + 1))
 
 
-def article_frame(spark: SparkSession, vocabs: dict) -> DataFrame:
-    """(article_idx, <categorical idx>...) -- one row per article in the catalog."""
+def with_article_volume(df: DataFrame, spark: SparkSession, on_day: str = "day_index"):
+    """
+    Attach the article's rolling volume features, log1p'd, joined PIT.
+
+    `feature_article_daily`'s row for (article, d) is already stamped "as of end
+    of day d-1" by the week-2 window frame, so joining it on the event's own
+    `day_index` is a plain equi-join and carries the same PIT guarantee the
+    customer side has. No new rule, new place.
+
+    Missing -> 0 after log1p, which is the honest value: an article with no row
+    for that day sold nothing in the window. That is only true because R.1's
+    rebuild put an article spine on the scoring day; without it the zeros would
+    be indistinguishable from "no data" (BUILD_NOTES step R.0).
+    """
+    feats = spark.table(ft.ARTICLE_FEATURE_TABLE).select(
+        "article_id", F.col("day_index").alias("_art_day"), *ARTICLE_NUMERIC
+    )
+    out = df.join(
+        feats,
+        (df["article_id"] == feats["article_id"]) & (df[on_day] == feats["_art_day"]),
+        "left",
+    ).drop(feats["article_id"]).drop("_art_day")
+    for c in ARTICLE_NUMERIC:
+        out = out.withColumn(
+            c, F.log1p(F.coalesce(F.col(c).cast("double"), F.lit(0.0)))
+        )
+    return out
+
+
+def article_frame(
+    spark: SparkSession, vocabs: dict, as_of_day: int | None = None
+) -> DataFrame:
+    """
+    One row per article in the catalog: (article_id, article_idx, categoricals),
+    plus the rolling volume features **as of `as_of_day`** when given.
+
+    `as_of_day` is a `day_index`. Passing None reproduces the pre-R.2 static
+    frame with the volume columns zero-filled, which is what the R.1 ablation
+    rung needs to stay comparable.
+    """
     arts = spark.table(ingest.ARTICLES_TABLE)
     out = with_article_idx(arts, article_index_df(spark, vocabs))
     for c in ARTICLE_CATEGORICALS:
         out = out.withColumn(f"{c}_idx", _map_col(c, vocabs[c]))
+    if as_of_day is None:
+        for c in ARTICLE_NUMERIC:
+            out = out.withColumn(c, F.lit(0.0))
+    else:
+        out = out.withColumn("_as_of", F.lit(as_of_day))
+        out = with_article_volume(out, spark, on_day="_as_of").drop("_as_of")
     return out.select(
-        "article_id", "article_idx", *[f"{c}_idx" for c in ARTICLE_CATEGORICALS]
+        "article_id",
+        "article_idx",
+        *[f"{c}_idx" for c in ARTICLE_CATEGORICALS],
+        *ARTICLE_NUMERIC,
     )
 
 
@@ -221,8 +288,17 @@ def export(
     train_start: str = "2020-02-14",
     train_end: str | None = None,
     eval_customer_sample: int = 20_000,
+    article_volume: bool = False,
 ) -> dict:
-    """Write vocabs, the article frame, the training rows and the eval rows."""
+    """
+    Write vocabs, the article frame, the training rows and the eval rows.
+
+    `article_volume` (step R.2) attaches the article's rolling volume features
+    to both the training rows and the article index, the latter **as of the
+    scoring day**. Left False, the volume columns are present but zero, so the
+    parquet schema is stable across the ablation ladder and the R.1 rung stays
+    bit-comparable with the reference build.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     train_end = train_end or splits.bounds("train")[1]
 
@@ -231,23 +307,30 @@ def export(
         json.dumps({k: {str(a): b for a, b in v.items()} for k, v in vocabs.items()})
     )
 
-    arts = article_frame(spark, vocabs)
-    arts.coalesce(1).write.mode("overwrite").parquet(str(out_dir / "articles"))
-
-    events = training_events(spark, customer_sample, train_start, train_end)
-    aidx = article_index_df(spark, vocabs)
-    events = with_article_idx(events, aidx)
-    train = customer_context(spark, events, vocabs).drop("customer_id", "article_id")
-    train.write.mode("overwrite").parquet(str(out_dir / "train"))
-
     # Evaluation cohort: customers who bought during val_tune, scored as of the
-    # first day of val_tune.
+    # first day of val_tune. day0 is needed BEFORE the article frame is written,
+    # because from R.2 on the article index is exported as of the scoring day
+    # rather than once ever.
     lo, hi = splits.bounds("val_tune")
     day0 = (
         spark.sql(f"SELECT datediff(date'{lo}', date'{ft.DAY_ZERO}') AS d")
         .collect()[0]
         .d
     )
+
+    arts = article_frame(spark, vocabs, as_of_day=day0 if article_volume else None)
+    arts.coalesce(1).write.mode("overwrite").parquet(str(out_dir / "articles"))
+
+    events = training_events(spark, customer_sample, train_start, train_end)
+    aidx = article_index_df(spark, vocabs)
+    events = with_article_idx(events, aidx)
+    if article_volume:
+        events = with_article_volume(events, spark)
+    else:
+        for c in ARTICLE_NUMERIC:
+            events = events.withColumn(c, F.lit(0.0))
+    train = customer_context(spark, events, vocabs).drop("customer_id", "article_id")
+    train.write.mode("overwrite").parquet(str(out_dir / "train"))
     truth = (
         spark.table(ingest.TRANSACTIONS_TABLE)
         .filter(F.col("t_dat").between(F.lit(lo).cast("date"), F.lit(hi).cast("date")))
@@ -285,10 +368,13 @@ if __name__ == "__main__":
 
     from marketrank.spark import get_spark
 
-    _n = int(sys.argv[1]) if len(sys.argv) > 1 else 100_000
+    # python -m marketrank.retrieval.dataset [COHORT] [--article-volume]
+    _n = int(sys.argv[1]) if len(sys.argv) > 1 and not sys.argv[1].startswith("-") else 100_000
+    _vol = "--article-volume" in sys.argv
     _spark = get_spark("twotower_export", driver_memory="10g")
     _t = time.time()
-    _stats = export(_spark, customer_sample=_n)
+    _stats = export(_spark, customer_sample=_n, article_volume=_vol)
+    print("EXPORT article_volume", _vol)
     print("EXPORT_SECONDS %.1f" % (time.time() - _t))
     for k, v in _stats.items():
         print("EXPORT", k, v)

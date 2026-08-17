@@ -37,3 +37,8 @@ dbt/dbt_packages/
 # Regenerable model/export artifacts (marketrank.retrieval.dataset, trained
 # checkpoints). Rebuild with `make twotower-data` / `make twotower-train`.
 artifacts/
+
+# Job logs. sbatch writes logs/%x-%j.out here and the local runner does the
+# same. The directory must EXIST before submit (`mkdir -p logs`), but nothing
+# inside it is source.
+logs/

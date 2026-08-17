@@ -295,27 +295,57 @@ def _write_partitioned(df: DataFrame, table: str, spark: SparkSession) -> None:
         writer.partitionedBy(F.days("feature_date")).createOrReplace()
 
 
-def customer_day_spine(
-    spark: SparkSession, customers: DataFrame, start: str, end: str
+def entity_day_spine(
+    spark: SparkSession,
+    entities: DataFrame,
+    key_col: str,
+    start: str,
+    end: str,
 ) -> DataFrame:
     """
-    Every (customer, day) pair in [start, end] for the given customers.
+    Every (entity, day) pair in [start, end] for the given entities.
 
     Window functions only emit output for rows that EXIST, so without this the
-    feature tables contain a row for (customer, day) only where that customer
-    transacted -- and week 4 needs features for exactly the days they did not,
+    feature tables contain a row for (entity, day) only where that entity
+    transacted -- and week 4 needs features for exactly the days it did not,
     because candidates are scored on days nothing was bought.
 
     Measured consequence of omitting it, on this build's own candidate table:
     only 2,818 of 20,000 evaluation customers had a customer-feature row on
     2020-08-12, so **85.6% of candidate rows joined to NULL customer features**.
     See BUILD_NOTES step 4.2.
+
+    THE SPINE IS A SET OF SCORING DAYS, NOT A CALENDAR. A dense
+    entity x every-day spine is never the right object -- 1.37M customers x 734
+    days is 1.006 **billion** rows before a single feature is attached. The
+    spine covers the days something is actually scored on, and its cost is
+    linear in that count: ~1.37M customer rows per scoring day. See R.1.
     """
     days = spark.sql(
         f"SELECT explode(sequence(date'{start}', date'{end}', interval 1 day))"
         " AS feature_date"
     ).withColumn("day_index", day_index("feature_date"))
-    return customers.select("customer_id").distinct().crossJoin(F.broadcast(days))
+    return entities.select(key_col).distinct().crossJoin(F.broadcast(days))
+
+
+def customer_day_spine(
+    spark: SparkSession, customers: DataFrame, start: str, end: str
+) -> DataFrame:
+    """Every (customer, day) pair in [start, end]. See `entity_day_spine`."""
+    return entity_day_spine(spark, customers, "customer_id", start, end)
+
+
+def article_day_spine(
+    spark: SparkSession, articles: DataFrame, start: str, end: str
+) -> DataFrame:
+    """
+    Every (article, day) pair in [start, end]. See `entity_day_spine`.
+
+    Needed from R.2 on: once the article tower consumes rolling volume features,
+    the article index has to be exported as of the eval date, and an article
+    that sold nothing that day still needs a row -- a zero, not a missing key.
+    """
+    return entity_day_spine(spark, articles, "article_id", start, end)
 
 
 def feature_coverage(

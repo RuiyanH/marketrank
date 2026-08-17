@@ -51,7 +51,7 @@ class StubTowers:
     def train(self):
         return self
 
-    def article(self, ids, cats):
+    def article(self, ids, cats, numeric=None):
         # Indexed BY article_idx -- exactly the contract load_articles promises.
         return self.V[ids]
 
