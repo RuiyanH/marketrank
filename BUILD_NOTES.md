@@ -1493,3 +1493,58 @@ inserted before R.2, as a deviation from the plan:
 seeds 1 and 2. The spread across seeds 0/1/2 is the resolution of every
 comparison that follows, and it gets quoted next to every later number rather
 than assumed away.
+
+## Step R.1b — The noise floor (inserted; not in the plan)
+
+Three runs of the **identical** arm-B configuration, differing only in `--seed`.
+Same export, same cohort, same 70,715 pairs, 8 epochs each.
+
+| run | seed | best epoch | r@12 | r@100 | r@500 |
+|---|---|---|---|---|---|
+| `r1_clean` | 0 | 5 | 1.2501% | 5.7852% | 15.6077% |
+| `r1b_seed1` | 1 | 6 | 1.2133% | 5.7612% | 15.7039% |
+| `r1b_seed2` | 2 | 7 | 1.2388% | 5.8121% | 15.6968% |
+
+```
+recall@100  min 5.7612  max 5.8121  spread 0.0509  mean 5.7861  sd 0.0255
+recall@500  min 15.6077 max 15.7039 spread 0.0962
+best epoch  5, 6, 7  -- epoch selection is itself noisy
+```
+
+### The number this step exists to produce
+
+> **Run-to-run spread on recall@100 is 0.051 points (sd 0.026) at fixed
+> configuration. Treat any single-run delta below ~0.08 points (3 sd) as
+> unmeasured, and quote multi-seed means for anything closer than that.**
+
+### It also closes R.1's open question
+
+R.1 recorded that arm A (5.6438%) and arm B's own epoch 7 (5.7032%) disagreed by
+**0.059** despite identical data and `seed=0`, and named two candidates: a
+different week-3 configuration, or non-reproducible training. The seed spread is
+**0.051**, the same size. So the discrepancy is ordinary run-to-run variance and
+the "week 3 used a different config" hypothesis needs no further pursuit —
+which is the cheap answer, obtained for the price of two runs that were going to
+be needed anyway.
+
+### What it does to R.1's conclusion — it survives, comfortably
+
+Using the three-seed mean rather than the single arm-B run:
+
+```
+arm B mean (seeds 0,1,2)          5.7861%   +/- 0.026 sd
+week-3 headline (epoch 4, dirty)  5.5307%
+spine fix                         +0.255 points   = 5x the spread
+gap remaining to baseline union   -1.181 points   = 23x the spread
+```
+
+Both statements R.1 makes are far outside the noise. The spine was worth a real
+but small amount, and the tower's loss to the baseline is not remotely explained
+by it.
+
+### Cost, and why it was worth paying
+
+Three runs where the plan called for one, ~40 minutes of laptop compute. Against
+that: every rung of the R.2/R.3 ladder is now interpretable, and the alternative
+was reporting a +0.04-point "improvement" as though it meant something. An
+ablation ladder without a noise floor is a list of numbers, not evidence.

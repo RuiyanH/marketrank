@@ -368,12 +368,20 @@ if __name__ == "__main__":
 
     from marketrank.spark import get_spark
 
-    # python -m marketrank.retrieval.dataset [COHORT] [--article-volume]
+    # python -m marketrank.retrieval.dataset [COHORT] [--article-volume] [--out DIR]
+    #
+    # `--out` exists so an R.2 export does not overwrite the R.1 one. Every rung
+    # of the recovery ladder has to stay re-verifiable from disk, and an export
+    # written in place takes its own rung's numbers with it.
     _n = int(sys.argv[1]) if len(sys.argv) > 1 and not sys.argv[1].startswith("-") else 100_000
     _vol = "--article-volume" in sys.argv
+    _out = DATASET_DIR
+    if "--out" in sys.argv:
+        _out = Path(sys.argv[sys.argv.index("--out") + 1])
     _spark = get_spark("twotower_export", driver_memory="10g")
     _t = time.time()
-    _stats = export(_spark, customer_sample=_n, article_volume=_vol)
+    _stats = export(_spark, out_dir=_out, customer_sample=_n, article_volume=_vol)
+    print("EXPORT out_dir", _out)
     print("EXPORT article_volume", _vol)
     print("EXPORT_SECONDS %.1f" % (time.time() - _t))
     for k, v in _stats.items():
