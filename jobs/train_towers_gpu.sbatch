@@ -77,9 +77,18 @@ BATCH=4096            # larger than the laptop's 1024: in-batch negatives scale
                       # changes the negative distribution -- report it.
 LR=3e-3
 TEMPERATURE=0.07
-N_UNIFORM=64          # R.3's chosen value -- CONFIRM against the ladder
+N_UNIFORM=0           # R.3 HAS NOT RUN. train() raises NotImplementedError on a
+                      # non-zero value, deliberately -- a plumbed-and-inert
+                      # parameter is the bug class this build keeps finding. Set
+                      # this to R.3's measured winner once R.3 exists, not before.
 RECENCY_HALF_LIFE=30  # days -- R.2's measured winner (+0.873 recall@100)
 LABEL="r4_scale_gpu"
+
+# NO --article-volume. R.2 measured it as actively harmful: -0.462 recall@100
+# alone, -1.715 on top of recency, and it produced the LOWEST training loss of
+# the four arms while giving the WORST retrieval. See BUILD_NOTES step R.2 for
+# the day-fingerprint mechanism. If you re-enable it, you are re-enabling a
+# measured leak.
 
 echo "=== marketrank two-tower (GPU) ======================================"
 echo "job              : ${SLURM_JOB_ID:-interactive} on $(hostname)"
@@ -134,7 +143,6 @@ python -m marketrank.jobs.train_towers \
     --temperature "${TEMPERATURE}" \
     --n-uniform "${N_UNIFORM}" \
     --recency-half-life "${RECENCY_HALF_LIFE}" \
-    --article-volume \
     --threads "${OMP_NUM_THREADS}"
 
 echo "finished         : $(date -Is)"

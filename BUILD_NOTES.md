@@ -1703,3 +1703,102 @@ scoring day.)
 
 **So any R.2 delta is attributable to the features.** That is what this
 checkpoint buys, and it is the reason the ablation below can be read at all.
+
+### The ablation — three arms, seed 0, against the 3-seed baseline mean
+
+| arm | r@12 | r@100 | Δ vs 5.7861 | r@500 | best ep |
+|---|---|---|---|---|---|
+| baseline (arm B, 3-seed mean) | 1.250% | 5.7861% | — | 15.608% | — |
+| `r2_vol` — article volume only | 1.058% | 5.324% | **−0.462** | 14.666% | 2 |
+| `r2_recency` — half-life 30d | 1.430% | **6.659%** | **+0.873** | 18.214% | 4 |
+| `r2_both` | 1.059% | 4.944% | **−0.842** | 14.211% | 6 |
+| baseline union (the bar) | 2.511% | 6.967% | — | 18.993% | — |
+
+Every delta is far outside the 0.051 noise floor — the smallest, −0.462, is 9x
+it. No second seed is needed to read this table.
+
+### FINDING 1 — recency weighting closes most of the gap, and it is one number
+
+`--recency-half-life 30` alone: **+0.873 recall@100**, 17x the noise floor, and
+recall@500 goes 15.608% -> 18.214% against the bar's 18.993%. The tower now
+trails the baseline union by **0.308 points instead of 1.181** — about **74% of
+the remaining shortfall, closed by a single hyperparameter** that costs nothing.
+
+Worth being precise about what this does and does not vindicate. The recovery
+plan's hypothesis 2 was *"the tower is blind to what is trending"*, and the
+proposed mechanism was *"feed it the article volume features"*. **The diagnosis
+was right and the prescription was wrong.** Recency of the training signal was
+the missing ingredient; the volume features were not. Being right about the
+disease and wrong about the drug is the honest summary, and it is recorded that
+way rather than keeping only the half that worked.
+
+### FINDING 2 — article volume is a LEAK, and the loss curve proves it
+
+This is the sharper result. Loss and recall, every epoch, all four arms:
+
+```
+LOSS        e0      e2      e4      e7          RECALL@100  e0      e2      e4      e7
+r1_clean    7.0208  6.7344  6.6644  6.5957      r1_clean    4.9523  5.5123  5.7074  5.7032
+r2_vol      6.9184  6.6531  6.5616  6.4759      r2_vol      5.0810  5.3242  5.2959  5.2153
+r2_recency  6.9674  6.6449  6.5514  6.4526      r2_recency  5.8163  6.3933  6.6591  6.4781
+r2_both     6.6836  6.3483  6.2279  6.1159      r2_both     4.5888  4.9014  4.7444  4.8901
+```
+
+**Article volume lowers the training loss at every epoch and lowers recall at
+every epoch, and the arm with the lowest loss of all four has the worst
+retrieval of all four.** The anti-correlation is monotone: adding volume to the
+baseline buys ~0.12 of loss and costs ~0.5 of recall; adding it on top of
+recency buys ~0.33 of loss and costs ~1.6 of recall. The better the shortcut
+works, the more damage it does.
+
+**The mechanism, which was named as an open question BEFORE this ran** (see the
+pause note): in a batch, every column's article carries volume as of *its own*
+event day, while the customer row carries features as of *its* day. The model
+can identify the diagonal by matching day-stamps — a fingerprint — without
+learning anything about taste. At eval, all 105,542 articles carry volume as of
+the single scoring day 692, the fingerprint is constant, and whatever was
+learned on it collapses.
+
+That the open question turned out to be the whole story is the argument for
+writing design doubts down before running rather than after.
+
+**The discriminating experiment, NOT RUN:** re-export with every row's article
+volume taken as of one fixed day, so the feature carries popularity but no day
+information. If the fingerprint hypothesis holds, that variant should neither
+lower loss as much nor damage recall. It is the clean way to separate "volume is
+useless" from "volume as currently stamped is a leak", and it is worth an hour
+before anyone re-enables the feature.
+
+### FINDING 3 — this is the second time low loss has meant a worse model here
+
+Week 3's logQ ablation: the run **without** the correction had the lower
+training loss and 17x worse recall@500. R.2: the arm with the lowest loss has
+the worst recall. Same lesson, independent mechanism, and together they are the
+most interviewable pair of results in this project. The objective is a proxy;
+the metric that matters is measured on held-out retrieval, and a build that only
+watched the loss would have shipped both mistakes.
+
+### DECISION — what carries forward
+
+- **Recency weighting, half-life 30 days: ADOPTED.** Every rung from here uses it.
+- **Article volume: DROPPED.** `jobs/train_towers_gpu.sbatch` explicitly does not
+  pass `--article-volume`, with the reason in the script so it is not
+  re-enabled by someone reading only the plan, which recommends it.
+- **R.3's design question is moot for now.** It asked how a uniform negative
+  should be given a volume vector once articles are time-varying. With volume
+  dropped, articles are static again and the question does not arise. It returns
+  the moment anyone revisits the fixed-day variant above.
+
+### Where the tower now stands
+
+```
+week-3 headline (dirty features)   5.5307%   gap to bar -1.436
+arm B  (spine fixed, 3-seed mean)  5.7861%   gap to bar -1.181
+r2_recency                         6.6591%   gap to bar -0.308
+baseline union (the bar)           6.9670%
+```
+
+**79% of the original gap is closed**, by a spine fix and one hyperparameter,
+with two of the plan's four hypotheses still untested. R.3 (mixed negatives) and
+R.4 (scale) are now the remaining levers, and the tower is close enough that
+R.6's keep/demote decision is genuinely live rather than a formality.
