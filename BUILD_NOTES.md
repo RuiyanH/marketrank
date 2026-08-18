@@ -1548,3 +1548,92 @@ Three runs where the plan called for one, ~40 minutes of laptop compute. Against
 that: every rung of the R.2/R.3 ladder is now interpretable, and the alternative
 was reporting a +0.04-point "improvement" as though it meant something. An
 ablation ladder without a noise floor is a list of numbers, not evidence.
+
+---
+
+# STATE AND HOW TO RESUME — paused 2026-08-15 after R.1b
+
+**Stopped on disk, not on a result.** The volume reached 11 GiB free (95% full)
+against a 10 GiB floor. Nothing in this project caused it — the whole build is
+~5.4 GB across both warehouses and the exports, and the three R.1b runs wrote
+~80 MB — and there are no Time Machine local snapshots. R.2's export writes only
+~250 MB, but its Spark joins spill to the same volume and `spark.local.dir` is
+unset on this branch, so the transient peak is unbounded and unmeasured.
+
+**Free space first, then resume.** Nothing else blocks R.2.
+
+## Ladder so far — every number on the fixed cohort (20,000 customers / 70,715 pairs)
+
+| rung | r@100 | vs. baseline |
+|---|---|---|
+| week-3 headline (epoch 4, dirty features) | 5.5307% | −1.436 |
+| arm A — week-3 model, clean features | 5.6438% | −1.323 |
+| arm B — clean retrain, 3-seed mean | **5.7861%** ± 0.026 | **−1.181** |
+| baseline union (the bar) | 6.967% | — |
+
+**Noise floor: 0.051 spread, 0.026 sd. Single-run deltas below ~0.08 points are
+unmeasured.** Quote multi-seed means for anything closer.
+
+## The exact next command
+
+```bash
+.venv/bin/python -m marketrank.retrieval.dataset 300000 --article-volume --out artifacts/twotower_r2
+```
+
+Cohort **300000** is not optional: it is what reproduces the fixed training set.
+The export's own checkpoint is `n_train_rows 2,900,248` and
+`n_eval_truth_pairs 70,715`; if either moves, stop — the ladder is no longer a
+comparison. `--out` keeps R.1's export intact so that rung stays re-verifiable.
+
+Then the R.2 ablation, `--data artifacts/twotower_r2` on each:
+
+```
+--label r2_vol      --article-volume
+--label r2_recency  --recency-half-life 30
+--label r2_both     --article-volume --recency-half-life 30
+```
+
+One change at a time, then both. Anything inside ±0.08 needs a second seed
+before it is claimed.
+
+## Code state
+
+`R.2` is written and reviewed — the export attaches article volume PIT (the
+`(article, d)` feature row is already stamped as-of `d−1` by week 2's frame, and
+the catalog index is stamped as of day 692), and the training loop takes the
+positive's volume from **the train row, not the catalog matrix**, which would
+otherwise leak scoring-day volume into training. `R.5`'s `covisit.py` and the
+candidate-ceiling job are written and unrun. `R.3` is **not implemented** —
+`train()` raises `NotImplementedError` on `n_uniform`, deliberately, because a
+plumbed-and-inert parameter is the exact class of silent bug this build keeps
+finding.
+
+## AN OPEN DESIGN QUESTION R.3 MUST ANSWER — do not implement past it
+
+Uniform negatives and R.2's time-varying article features interact, and there is
+no obviously correct choice. Once articles carry volume, a sampled negative
+needs a volume vector:
+
+- **Zero-fill it** → positives become the only rows with nonzero volume, which is
+  a trivially separable shortcut the model will find immediately.
+- **Read the catalog matrix** → that matrix is as of the scoring day, so training
+  sees future volume. A leak, and precisely the one the train-row rule above
+  exists to prevent.
+- **Use each negative's own event-day volume** (what in-batch negatives do
+  implicitly today) → row `i`'s negative carries volume from day `j`, which may
+  be **later than day `i`**. A mild future leak already latent in R.2's design,
+  inherent to in-batch negatives with time-varying item features.
+
+The third is what the current code does, so **R.2's own numbers carry it**. That
+is tolerable for R.2 (the effect is on the negatives, not the positive) but it
+should be stated when R.2's result is reported, and R.3 should not be built
+without deciding deliberately. The cheap discriminating experiment: run R.2 with
+and without article volume and compare not just recall but the gap between
+training loss and eval recall — a leak that helps training and not retrieval
+shows up there.
+
+## Everything else that was true at the pause
+
+Working tree clean, 5 commits added this session (`3ee69ee` R.1, `d6026b6`
+R.1b, plus R.0 earlier at `d7aeaf9`). Nothing pushed. The user's checkout at
+`/Users/test/Developer/marketrank` was never touched.
