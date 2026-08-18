@@ -6,11 +6,30 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_RAW = Path(os.environ.get("MARKETRANK_DATA_RAW", PROJECT_ROOT / "data" / "raw"))
 WAREHOUSE = Path(os.environ.get("MARKETRANK_WAREHOUSE", PROJECT_ROOT / "warehouse"))
 REPORTS = Path(os.environ.get("MARKETRANK_REPORTS", PROJECT_ROOT / "reports"))
+# Where Spark spills. Overridable so misha can point it at node-local /tmp
+# (SETUP_MISHA Phase 3b -- GPFS handles small-file shuffle churn badly) while
+# the laptop keeps it inside the repo. Left unset entirely, Spark spills to the
+# OS temp dir where it is neither bounded nor visible: that is how R.5's
+# co-visitation job retained 5.2 GB of orphaned shuffle across two crashes and
+# took this machine to 332 MiB free.
+SPARK_TMP = Path(os.environ.get("MARKETRANK_SPARK_TMP", PROJECT_ROOT / ".spark-tmp"))
 
-os.environ.setdefault(
-    "JAVA_HOME",
-    "/Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home",
-)
+# JAVA_HOME. `setdefault` so a real environment value always wins -- on misha
+# `module load Java/17.0.4` sets it, and that must not be overridden.
+#
+# But the fallback is a **macOS** path, and setting it unconditionally is worse
+# than leaving it unset: on Linux it made Spark launch
+# `/Library/Java/.../bin/java`, which fails with "No such file or directory"
+# and surfaces as JAVA_GATEWAY_EXITED -- an error that names neither Java nor
+# the path. That is exactly what happens in a Jupyter kernel on the cluster,
+# which does not inherit the shell's `module load`.
+#
+# So only claim the default when it actually exists. Elsewhere JAVA_HOME stays
+# unset and Spark's own "JAVA_HOME is not set" is the error you get, which is
+# the true one.
+_MACOS_JDK = Path("/Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home")
+if _MACOS_JDK.exists():
+    os.environ.setdefault("JAVA_HOME", str(_MACOS_JDK))
 os.environ.setdefault(
     "PYSPARK_PYTHON",
     str(PROJECT_ROOT / ".venv" / "bin" / "python"),
