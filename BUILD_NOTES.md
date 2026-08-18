@@ -2137,3 +2137,81 @@ from emission; sidecars written by a run carry no flag.
 Also corrected: this file said co-visitation reaches **9,180** customers; the
 artifact says **9,179**, and 332,721 / 36.248 agrees. In a build whose habit is
 reproducing figures to the digit, the prose has to match the artifact.
+
+---
+
+## Step R.5c — The covisit depth probe
+
+The question R.5b left: is co-visitation limited by **depth** (how many
+candidates each seed can contribute) or by **reach** (how many customers it can
+serve at all)? Full derive at the same 30/20 bounds, with `--covisit-top-k 40
+--n-covisit 60` against the committed 20/40 — only covisit's depth changed, so
+the comparison to 10.777% is clean by construction.
+
+| | committed | depth probe | Δ |
+|---|---|---|---|
+| covisit `top_k` / `n` | 20 / 40 | **40 / 60** | |
+| covisit rows | 332,721 | 518,147 | +55.7% |
+| covisit **solo** | 2.803% | **3.501%** | **+0.698** |
+| covisit **reach** | 45.9% | **45.9%** | **0.000** |
+| covisit marginal | 1.509% | 1.908% | +0.399 |
+| covisit slots | 12.8 | 20.4 | +7.6 |
+| covisit **marginal/slot** | 0.1176% | **0.0934%** | **−21%** |
+| candidates/customer | 138.1 | 145.7 | +7.6 |
+| **UNION CEILING** | **10.777%** | **11.176%** | **+0.399** |
+
+### THE ANSWER — depth was binding, but reach is the ceiling
+
+Three facts, and they do not conflict:
+
+1. **Depth was genuinely binding.** `top_k=20` capped what each seed could
+   contribute before `n=40` did, exactly as suspected; lifting both raised
+   covisit's solo coverage by 0.698 points and the union ceiling by 0.399. The
+   R.5b claim that covisit was "already near its cap" was true of `n` and false
+   of the pair — `top_k` was the binding one.
+2. **Reach did not move by a single customer.** 45.9% before, 45.9% after,
+   9,179 of 20,000 both times. Depth cannot buy reach, and this is the direct
+   measurement of that rather than an inference from the 46%.
+3. **Efficiency fell 21%** (0.1176% → 0.0934% per slot). Covisit is still the
+   most efficient source, but the extra candidates are worth measurably less
+   than the first ones — ordinary diminishing returns, and the reason "just keep
+   deepening" does not reach the target.
+
+**11.176% is still short of 12%**, with 0.824 points to find, and the cheap
+depth lever is now spent at declining value. The remaining lever is the one
+depth provably cannot touch: **reach**, i.e. the 60-day lookback. The earlier
+shape measurement says why it should work — 443,559 customers have activity in a
+60-day window against 256,753 in 30 days — and that is the run this machine
+cannot host.
+
+Note this is the asymmetry stated before the probe ran: depth-insensitivity
+would have been positive evidence for reach, but depth *helping* does **not**
+argue against the 60/50 run, because the two levers are independent. The probe
+was never going to change whether misha runs; it changes the **config that runs
+there** (take the deeper 40/60 — the absolute ceiling is what unblocks week 5,
+even at lower per-slot efficiency) and it removes "maybe depth was enough" as an
+untested alternative.
+
+### Budget caveat worth carrying to the cluster
+
+145.7 candidates per customer is already ~1.46x week 4's ~100 design point, and
+the 60-day lookback will add more. Candidate count multiplies the week-4 join
+(the ~110 GB zstd estimate assumed ~100), so a ceiling bought with 180
+candidates/customer is not free downstream — it is paid for again in the
+ranker's training set. Record the slot count next to any future ceiling.
+
+### The provenance machinery, verified on a real run
+
+This is the first artifact produced after the sidecar fix, and it behaves:
+
+```
+derived                   true
+derivation_args_used      true
+run.args covisit          {n_covisit 60, covisit_lookback 30, covisit_max_basket 20, covisit_top_k 40}
+sources/covisit.meta.json {n_covisit 60, covisit_lookback 30, covisit_max_basket 20, covisit_top_k 40}
+                          -- no `backfilled` flag: emitted, not reconstructed
+```
+
+`covisit_top_k` appears in the sidecar because it was registered in
+`SOURCE_ARGS` and `DERIVATION_ARGS` when the flag was added, which is the drift
+case the new import-time assert exists to enforce.
