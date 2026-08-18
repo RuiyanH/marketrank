@@ -1,15 +1,6 @@
-import os
-from pathlib import Path
-
 from pyspark.sql import SparkSession
 
 from marketrank import config
-
-# Where shuffle spill lands. Overridable so misha can point it at node-local
-# /tmp (SETUP_MISHA Phase 3b) while the laptop keeps it inside the repo.
-SPARK_TMP = Path(
-    os.environ.get("MARKETRANK_SPARK_TMP", config.PROJECT_ROOT / ".spark-tmp")
-)
 
 
 def get_spark(
@@ -45,7 +36,7 @@ def get_spark(
         # repo does not make spill smaller; it makes it findable, measurable and
         # cleanable, and it is the same routing SETUP_MISHA Phase 3b does on the
         # cluster for a different reason (GPFS handles small-file churn badly).
-        .config("spark.local.dir", str(SPARK_TMP))
+        .config("spark.local.dir", str(config.SPARK_TMP))
     )
 
     if master.startswith("local"):

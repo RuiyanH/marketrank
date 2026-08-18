@@ -383,8 +383,19 @@ def train(
     # Accepted here so the CLI and the sbatch are stable across R.1-R.4, but a
     # parameter that is plumbed and inert is precisely the class of silent bug
     # this build keeps finding. Each one raises until its step implements it.
-    if n_uniform:
-        raise NotImplementedError("uniform negatives arrive in step R.3")
+    if n_uniform and article_volume:
+        # The open question R.2 recorded and never had to answer: a uniform
+        # negative needs a volume vector, and all three options are wrong
+        # (zero-fill is trivially separable; the catalog matrix is as of the
+        # scoring day and leaks; its own event day can be LATER than the row's).
+        # Article volume was dropped as a measured leak, so articles are static
+        # and the question does not arise -- but it returns the moment anything
+        # time-varying re-enters the article side, so refuse rather than pick
+        # silently.
+        raise NotImplementedError(
+            "uniform negatives + article_volume is an unresolved design "
+            "question -- see BUILD_NOTES step R.2/R.5 on the day-fingerprint leak"
+        )
 
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
@@ -442,6 +453,10 @@ def train(
     counts = np.bincount(tr["article"], minlength=vs["article_id"]).astype(np.float64)
     probs = np.clip(counts / max(counts.sum(), 1), 1e-12, None)
     log_q = torch.tensor(np.log(probs), dtype=torch.float32, device=device)
+    # A uniform draw over the real catalog (slot 0 is padding, never sampled).
+    log_q_uniform = torch.tensor(
+        np.log(1.0 / max(vs["article_id"] - 1, 1)), dtype=torch.float32, device=device
+    )
 
     art_cats_t = torch.tensor(art_cats_all, device=device)
     art_ids_t = torch.tensor(art_idx_all, device=device)
@@ -476,10 +491,28 @@ def train(
             # over-penalised as negatives and the model systematically
             # under-ranks them (measured: 17x on recall@500). The placement of
             # the correction relative to T lives in sampled_softmax_logits.
-            logits = sampled_softmax_logits(          # (B, B)
-                u, v, log_q[arts], temperature, use_logq=use_logq
+            # R.3 -- MIXED NEGATIVES. In-batch negatives are drawn from the
+            # POSITIVE distribution, so an article nobody buys is almost never a
+            # negative and the model can inflate the whole tail without penalty.
+            # Retrieval at k=100 is exactly where that bites. Uniform negatives
+            # price the tail; their sampling probability is 1/|catalog|, which
+            # is a different logQ term from the in-batch columns' empirical
+            # frequency -- so the correction is per-column, not per-batch.
+            v_cols, q_cols = v, log_q[arts]
+            if n_uniform:
+                neg = torch.as_tensor(
+                    rng.integers(1, vs["article_id"], size=n_uniform),  # 0 is padding
+                    device=device,
+                )
+                v_cols = torch.cat([v, model.article(neg, art_cats_t[neg], None)], 0)
+                q_cols = torch.cat([q_cols, log_q_uniform.expand(n_uniform)], 0)
+
+            logits = sampled_softmax_logits(          # (B, B + n_uniform)
+                u, v_cols, q_cols, temperature, use_logq=use_logq
             )
 
+            # The positive is still column i: uniform negatives are APPENDED, so
+            # the diagonal is untouched and the target does not move.
             target = torch.arange(len(b), device=device)
             if sample_w is None:
                 loss = Fn.cross_entropy(logits, target)
