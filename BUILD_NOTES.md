@@ -2222,8 +2222,12 @@ case the new import-time assert exists to enforce.
 
 The run R.5c named as the one the laptop could not host: covisit's cost bounds
 relaxed from 30/20, at the depths R.5c selected (`top_k 40`, `n 60`). Two steps,
-each changing bounds only — every other source, the cohort, and the ANN parquet
-are byte-identical across all three columns, so the union deltas are attributable.
+each changing bounds only. VERIFIED, not asserted: the four held sources match on
+`as_of`, row count and derivation args across both runs, and reproduce identical
+solo recall — checked by re-running `--sources-from` on the laptop against the
+synced sidecars, which returns 11.930% and the same five rows. ("Byte-identical"
+would be the wrong claim: two Spark writes of the same query need not produce
+identical parquet bytes, and that is not what makes the deltas attributable.)
 
 | | 30/20 (R.5c) | 60/50 | 90/50 |
 |---|---|---|---|
