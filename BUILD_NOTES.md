@@ -1802,3 +1802,122 @@ baseline union (the bar)           6.9670%
 with two of the plan's four hypotheses still untested. R.3 (mixed negatives) and
 R.4 (scale) are now the remaining levers, and the tower is close enough that
 R.6's keep/demote decision is genuinely live rather than a formality.
+
+---
+
+## Step R.5 — Ceiling raisers
+
+Same fixed cohort, denominator asserted at 70,715 before anything was measured.
+
+### RECALL CEILING 7.475% -> 10.777%
+
+```
+sources          3 -> 5     (+global_pop, +covisit)
+candidates/cust  104.6 -> 138.1
+CEILING          7.475% -> 10.777%      +3.302 points, +44% relative
+```
+
+### Source contribution at fixed budget (138.1 candidates/customer)
+
+| source | solo | marginal | marginal slots | **marginal/slot** |
+|---|---|---|---|---|
+| `covisit` | 2.803% | 1.509% | 12.8 | **0.1176%** |
+| `repurchase` | 2.916% | 1.765% | 19.3 | 0.0916% |
+| `ann` (two-tower) | **4.156%** | 1.714% | 29.9 | 0.0573% |
+| `global_pop` | 3.168% | 1.046% | 20.8 | 0.0503% |
+| `category_pop` | 2.162% | 1.199% | 31.4 | 0.0382% |
+| **UNION** | **10.777%** | | 138.1 | |
+
+### FINDING 1 — R.6's decision: KEEP the tower, by the rule set before the numbers existed
+
+R.6's criterion, written at plan time: *keep the tower as a source if its
+marginal-ceiling-per-slot is at least the weakest heuristic source's.*
+
+```
+ann          0.0573% per slot
+category_pop 0.0382% per slot   <- weakest heuristic
+=> 0.0573 >= 0.0382  =>  KEEP
+```
+
+Note how differently the two framings read on the same model. Solo, the tower
+**loses** to the baseline union (6.659% vs 6.967%) and by the original week-3
+checkpoint it fails. As a source it has the **highest solo coverage of any
+single source, 4.156%**, and it clears the keep bar. Both are true; the second
+is the question actually being asked, because stage 1 is an ensemble. That the
+criterion was fixed in advance is what makes this a decision rather than a
+rationalisation.
+
+Also visible here: R.2's recency win propagated. The same ANN source measured
+**3.329%** solo with the pre-recovery tower and **4.156%** now, without touching
+the candidate code.
+
+### FINDING 2 — co-visitation is the best source per slot, while handicapped
+
+`covisit` has the **highest marginal per slot of all five (0.1176%)**, at the
+**smallest slot cost (12.8)** — and it ran at *reduced* bounds, 30-day lookback
+and 50-article basket cut to 20, because the full settings would not fit (see
+the failure note below). The best source in the set is the one running with its
+hands tied.
+
+This is the fourth independent measurement pointing the same way: exact-article
+repurchase 3.36% vs 64.34% at `product_type_no`; global popularity beating
+dominant-category popularity at equal depth; recency weighting worth +0.873; and
+now co-visitation leading on efficiency. **The short-horizon signal on this
+dataset is trend and sequence, not identity.**
+
+### FINDING 3 — `category_pop` should be dropped
+
+Worst on every axis: lowest solo (2.162%), lowest marginal per slot (0.0382%),
+and the **largest slot cost of any source (31.4)**. It is 31 slots spent at a
+third of co-visitation's efficiency. The obvious experiment — drop it and give
+its slots to `covisit` — is NOT RUN, and is the cheapest remaining path to the
+plan's ~12% target from 10.777%.
+
+Caveat the code states and this table inherits: marginal is the value of a
+source *at its current depth*; removing it frees slots but does not reallocate
+them here. So "drop category_pop" is a hypothesis to measure, not an
+arithmetic certainty.
+
+### THE FAILURE THAT PRODUCED FINDING 2's HANDICAP — recomputation, not join size
+
+This job failed twice on `No space left on device`, and the second failure left
+the machine at **332 MiB free**. The diagnosis moved twice and the sequence is
+the point:
+
+1. **First failure** blamed on co-visitation's self-join. Measured at
+   `as_of=2020-08-12`: lookback 60 / basket 50 is 443,559 customers and a
+   **35.7M-pair** self-join, each pair carrying a 64-character `customer_id`.
+2. **Bounds cut to 30/20 — a measured 4x reduction to 9.0M pairs — and it failed
+   again.** That is what ruled out join size and identified the real cause.
+3. **Actual cause: repeated recomputation.** `marginal_contribution` runs ~22
+   Spark actions over 5 sources (solo ceiling and slot count each, leave-one-out
+   union and slot count each, plus the full union twice). A Spark DataFrame is a
+   plan, not a table, so every action touching `covisit` re-derived its join from
+   raw transactions — ~12 of them. At ~450 MB of retained shuffle each that is
+   ~5.4 GB, against **5.2 GB** found orphaned in `blockmgr-` after the crash.
+   The arithmetic closing is what confirms the mechanism.
+
+Fix: materialise every source to parquet once before measuring, 12 derivations
+to 1. The sources are tiny — at most `n` rows per customer over 20,000
+customers, 332k–1M rows each — and they now sit in
+`artifacts/candidates/sources/` where R.6's decision can be audited rather than
+trusted.
+
+**Two lessons worth carrying, both cheap to state and expensive to learn:**
+
+- *A lazy DataFrame reused across many actions is a recomputation, and the cost
+  is invisible in the code.* The line `marginal_contribution(sources, ...)` looks
+  like it reads five tables. It builds twelve.
+- *`spark.local.dir` is unset on this branch*, so spill went to the system temp
+  dir where it was neither bounded nor visible. The runbook routes it
+  deliberately on misha (Phase 3b) and the laptop never got the same treatment.
+  Worth fixing before the next Spark-heavy step.
+
+### What R.5 leaves
+
+```
+ceiling now              10.777%
+plan's target            "comfortably above 12%"
+cheapest untried path    drop category_pop, deepen covisit
+also untried             covisit at full 60/50 bounds -- needs the cluster
+```

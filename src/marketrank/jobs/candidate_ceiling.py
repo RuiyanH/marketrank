@@ -45,6 +45,14 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--n-category", type=int, default=C.N_CATEGORY)
     p.add_argument("--n-global-pop", type=int, default=C.N_GLOBAL_POP)
     p.add_argument("--n-covisit", type=int, default=C.N_COVISIT)
+    # Co-visitation's cost bounds, exposed because the defaults do not fit a
+    # laptop. MEASURED at as_of=2020-08-12: lookback 60 / basket 50 is 443,559
+    # customers and a 35.7M-pair self-join, and each pair carries a 64-char
+    # customer_id that gets shuffled twice -- it exhausted a 13 GiB disk. At
+    # 30 / 20 the same join is 9.0M pairs. Both are modelling statements as much
+    # as cost knobs: see covisit.py's module docstring.
+    p.add_argument("--covisit-lookback", type=int, default=covisit.LOOKBACK_DAYS)
+    p.add_argument("--covisit-max-basket", type=int, default=covisit.MAX_BASKET)
     p.add_argument("--no-category", action="store_true")
     p.add_argument("--out", type=Path, default=Path("artifacts/candidates"))
     p.add_argument("--expect-pairs", type=int, default=EXPECT_PAIRS)
@@ -93,7 +101,12 @@ def main(argv=None) -> dict:
     )
 
     sources[C.SOURCE_COVISIT] = covisit.covisit_source(
-        spark, as_of, customers=cohort, n=args.n_covisit
+        spark,
+        as_of,
+        customers=cohort,
+        n=args.n_covisit,
+        lookback_days=args.covisit_lookback,
+        max_basket=args.covisit_max_basket,
     )
 
     if args.ann is not None and args.ann.exists():
@@ -105,6 +118,35 @@ def main(argv=None) -> dict:
 
     names = tuple(sources)
     print("SOURCES", names)
+
+    # ------------------------------------------------------------------------
+    # MATERIALISE EVERY SOURCE BEFORE MEASURING. Not an optimisation -- without
+    # it this job cannot finish on a laptop, and the reason is worth stating.
+    #
+    # `marginal_contribution` runs ~22 Spark actions over 5 sources: a solo
+    # ceiling and a slot count each, a leave-one-out union and slot count each,
+    # plus the full union twice. Every action that touches `covisit` re-derives
+    # its self-join from raw transactions, because a Spark DataFrame is a plan,
+    # not a table. Co-visitation appears in ~12 of those actions.
+    #
+    # MEASURED: that recomputation retained 5.2 GB of shuffle files for the
+    # session's lifetime and exhausted the disk twice -- ~450 MB per derivation
+    # x ~12. Tightening covisit's bounds from 60/50 to 30/20 cut the join 4x
+    # (35.7M pairs -> 9.0M) and did NOT fix it, which is what identified
+    # recomputation rather than join size as the cause.
+    #
+    # Writing each source to parquet costs seconds and a few MB -- every source
+    # is at most `n` rows per customer over 20,000 customers -- and turns 12
+    # derivations into 1. It also leaves the sources on disk to inspect, which
+    # is how R.6's decision gets audited rather than trusted.
+    # ------------------------------------------------------------------------
+    src_dir = args.out / "sources"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        path = src_dir / f"{name}.parquet"
+        sources[name].write.mode("overwrite").parquet(str(path))
+        sources[name] = spark.read.parquet(str(path))
+        print(f"MATERIALISED {name:<14} rows {sources[name].count():>9} -> {path}")
 
     union = C.union_candidates(*sources.values(), source_names=names)
     union.cache()
