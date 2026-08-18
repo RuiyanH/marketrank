@@ -1637,3 +1637,69 @@ shows up there.
 Working tree clean, 5 commits added this session (`3ee69ee` R.1, `d6026b6`
 R.1b, plus R.0 earlier at `d7aeaf9`). Nothing pushed. The user's checkout at
 `/Users/test/Developer/marketrank` was never touched.
+
+---
+
+## Step R.2 — Information parity: give the tower what the baseline sees
+
+Resumed 2026-08-15 after the disk pause. The hypothesis, from the recovery
+preamble: the popularity baseline's whole advantage is that it *knows what is
+selling now*, and the article tower is an id plus five static categoricals —
+structurally blind to it, on a fast-fashion catalog. Week 2 already computes the
+missing quantity; it was never wired in.
+
+### The export
+
+```
+EXPORT out_dir            artifacts/twotower_r2
+EXPORT article_volume     True
+EXPORT_SECONDS            230.0
+EXPORT n_articles         105,542
+EXPORT n_train_rows     2,900,248
+EXPORT n_eval_customers    20,000
+EXPORT n_eval_truth_pairs  70,715
+```
+
+`n_train_rows` and `n_eval_truth_pairs` reproduce the reference build to the
+row, which is the export's own checkpoint: the cohort and the denominator did
+not move, so every number below is on the same ground as R.1's. Written to a
+**separate directory** so R.1's export survives and that rung stays
+re-verifiable.
+
+### Checkpoint — the export changed nothing except what it added
+
+The R.2 rung is only interpretable if the new export is the old export plus
+columns. The tempting way to check that is a control training run with the flags
+off, ~13 minutes, whose answer would then sit inside the 0.051 noise floor and
+prove nothing at the margin. The cheap way is to compare the two parquets
+directly, which is *proof* rather than inference, and takes seconds:
+
+```
+rows                             A = 2,900,248   B = 2,900,248
+columns added                    12  (art_{n_txn,n_customers,spend,avg_price}_{7,30,90}d)
+columns dropped                  none
+18 scalar shared columns         IDENTICAL as a row multiset (lexsorted, exact)
+recent_articles                  lengths identical, flattened values identical
+```
+
+Row order is not guaranteed across Spark writes, so the comparison lexsorts both
+sides by every scalar column and requires exact equality — a multiset identity,
+which is the right claim for two writes of the same query.
+
+And the added columns carry signal rather than being structurally zero:
+
+```
+                    frac non-zero   mean    max
+art_n_txn_7d            0.9752      3.7480  7.6615
+art_n_txn_30d           0.9898      4.9302  8.5500
+art_n_txn_90d           0.9933      5.6267  9.1924
+art_avg_price_90d       0.9933      0.0270  0.4057
+```
+
+(Values are `log1p`'d. The 2.5% of rows with zero 7-day volume are articles that
+sold nothing in the week before their event — a real value, not a gap, and only
+distinguishable from "no data" because R.1's rebuild put an article spine on the
+scoring day.)
+
+**So any R.2 delta is attributable to the features.** That is what this
+checkpoint buys, and it is the reason the ablation below can be read at all.
