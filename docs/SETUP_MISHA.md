@@ -24,7 +24,7 @@ Execute phases in order. Each phase ends with a **CHECKPOINT** stating the expec
 |---|---|
 | Login | `rh849@misha.ycrc.yale.edu` (Yale VPN required) |
 | Group | `dijk` |
-| `~/project` | → `/gpfs/radev/project/dijk/rh849` — 4 TiB, never purged, **no backup** |
+| `~/project` | → `/gpfs/radev/project/dijk/rh849` — never purged, **no backup**. 4 TiB is the *fileset* size, NOT your quota: a 2026-08-18 write died with `Disk quota exceeded` here. **Do not put bulk data here** |
 | `~/scratch` | → `/gpfs/radev/scratch/dijk/rh849` — 10 TiB, **purged after 60 days** |
 | `~` (home) | 125 GiB quota, **~26 GiB free**, backed up. File limit 500k, ~138k used |
 | `/tmp` | 3.4 TB node-local NVMe, 3.3 TB free — **not** GPFS |
@@ -81,15 +81,23 @@ The `.venv` path is deliberate — `config.py` derives `PYSPARK_PYTHON` from
 ## Phase 2 — On MISHA: create directories
 
 ```bash
-mkdir -p ~/project/marketrank/data/raw ~/project/marketrank/warehouse ~/.kaggle
+mkdir -p ~/scratch/marketrank/data/raw ~/scratch/marketrank/warehouse ~/.kaggle
 ```
 
-**Why `~/project` and not `~` or `~/scratch`:** home has only ~26 GiB free and the warehouse will
-outgrow it; scratch is purged at 60 days and this project runs ~10 weeks. `project` is 4 TiB and
-never purged. It has no backup, but the warehouse is *derived* data — reproducible by re-running
-the load — so backup is not the relevant property.
+**Why `~/scratch` and not `~` or `~/project`** — this reverses the original choice, on evidence.
+Home is out on size (125 GiB quota, most of it already spoken for by unrelated work). `project`
+was the first choice because the fileset is 4 TiB and never purged; on 2026-08-18 a transactions
+load died there with `Disk quota exceeded` anyway. **`df` cannot see this** — it reports the whole
+3.7 PiB GPFS filesystem, not your quota — and `getquota` reported the wrong group, so the binding
+limit was never visible. See [Appendix B](#appendix-b--troubleshooting).
 
-**CHECKPOINT 2:** `ls -d ~/project/marketrank/{data/raw,warehouse}` lists both without error.
+That leaves scratch: 10 TiB, 15M inodes, empty. The cost is the **60-day purge**, and it is
+affordable because *everything* under this directory is reproducible — the warehouse by re-running
+the load, the CSVs by re-running the Kaggle download in 4b. Nothing here is a source of truth;
+the source of truth is the git repo, which lives in home. If you return to this project after two
+idle months, expect to redo Phase 4b and Phase 5, and nothing else.
+
+**CHECKPOINT 2:** `ls -d ~/scratch/marketrank/{data/raw,warehouse}` lists both without error.
 
 ---
 
@@ -136,12 +144,12 @@ Append under the Spark section:
 .spark-tmp/
 ```
 
-### 3d. New file `env.misha.sh` in the repo root — **commit this**
+### 3d. `env.misha.sh` in the repo root — **already committed**, no action needed
 
 ```bash
 module load Java/17.0.4
-export MARKETRANK_DATA_RAW="$HOME/project/marketrank/data/raw"
-export MARKETRANK_WAREHOUSE="$HOME/project/marketrank/warehouse"
+export MARKETRANK_DATA_RAW="$HOME/scratch/marketrank/data/raw"
+export MARKETRANK_WAREHOUSE="$HOME/scratch/marketrank/warehouse"
 export MARKETRANK_SPARK_TMP="${TMPDIR:-/tmp}/marketrank-spark"
 export SPARK_CONF_DIR="$HOME/marketrank/conf"
 source "$HOME/marketrank/.venv/bin/activate"
@@ -174,7 +182,7 @@ topology config stays in `get_spark()`.
 cd ~/marketrank && source env.misha.sh && python -c "from marketrank import config; print(config.WAREHOUSE); print(config.SPARK_TMP)" && java -version 2>&1 | head -1
 ```
 
-Expect the warehouse under `/gpfs/radev/project/dijk/rh849/...`, spark tmp under `/tmp/...`,
+Expect the warehouse under `/gpfs/radev/scratch/dijk/rh849/...`, spark tmp under `/tmp/...`,
 and `openjdk version "17.0.4"`. **If Java reports 21, the module load failed — stop.**
 
 Commit and push these changes.
@@ -195,7 +203,7 @@ connection over VPN.
 ### 4b. On MISHA: download the three files
 
 ```bash
-source ~/marketrank/env.misha.sh && cd ~/project/marketrank/data/raw && for f in transactions_train.csv articles.csv customers.csv; do kaggle competitions download -c h-and-m-personalized-fashion-recommendations -f "$f"; done && unzip -o '*.zip' && rm -f *.zip
+source ~/marketrank/env.misha.sh && cd ~/scratch/marketrank/data/raw && for f in transactions_train.csv articles.csv customers.csv; do kaggle competitions download -c h-and-m-personalized-fashion-recommendations -f "$f"; done && unzip -o '*.zip' && rm -f *.zip
 ```
 
 **The `-f` flag is required.** Without it Kaggle serves the entire competition, including ~25 GB of
@@ -204,7 +212,7 @@ product images this project never uses.
 **CHECKPOINT 4:**
 
 ```bash
-ls -la ~/project/marketrank/data/raw/
+ls -la ~/scratch/marketrank/data/raw/
 ```
 
 Expect roughly `transactions_train.csv` 3.2 G, `customers.csv` 198 M, `articles.csv` 34 M.
@@ -216,6 +224,20 @@ export from the Kaggle account page and copy the new file.
 
 ## Phase 5 — Build and verify the Iceberg table
 
+**Get an allocation first.** This step is a 31.8M-row load with a 48 GiB JVM; a login node will
+not give you the memory and running it there is against cluster etiquette. From a fresh login:
+
+```bash
+salloc -p day -c 16 --mem=64G -t 2:00:00
+```
+
+Do **not** run `salloc` from inside an existing allocation — Slurm rejects the nested call with
+`SLURM_MEM_PER_CPU, SLURM_MEM_PER_GPU, and SLURM_MEM_PER_NODE are mutually exclusive`. Reconnect
+with a fresh `ssh` instead. Check `hostname`: `login2` means the `salloc` did not take.
+
+`salloc` hands you a **fresh shell that has not sourced anything**, so the next line is mandatory
+in every new allocation — the single most common way this phase fails:
+
 ```bash
 cd ~/marketrank && source env.misha.sh && python
 ```
@@ -226,13 +248,15 @@ Then, interactively:
 from marketrank.spark import get_spark
 from marketrank import ingest, checks
 
-spark = get_spark(driver_memory="64g", master="local[16]")
+spark = get_spark(driver_memory="48g", master="local[16]")
 ingest.create_tables(spark)
 ingest.load_transactions(spark, "2018-09-20", "2020-09-22")
 ```
 
-`driver_memory="64g"` and `local[16]` are conservative for a 480 GiB / 64-core node and polite on
-the shared `devel` node. Raise them for the real backfill in a batch job.
+**`driver_memory` must be strictly less than `--mem`.** It sets the JVM *heap*; resident memory is
+heap plus metaspace, off-heap buffers and the Python workers. A 64 GiB heap under a 64 GiB cgroup
+is killed the moment the heap fills — the same failure as the `mem=2G` kill, just later. `48g`
+under `--mem=64G` leaves headroom. Raise both together for the real backfill in a batch job.
 
 **CHECKPOINT 5a:** the table has data.
 
@@ -257,6 +281,19 @@ checks.assert_identical(a, b)
 
 `assert_identical` must pass. It uses `exceptAll` in **both** directions — duplicate-preserving,
 unlike `EXCEPT`, so a row appearing twice where it should appear once is still caught.
+
+**On the full table this is four scans and two 31.8M-row shuffles.** It is not hung, but it looks
+hung, and interrupting it kills the py4j connection and costs you the whole session. Scope it to
+the window the MERGE actually touched and add a total-count guard for everything outside it:
+
+```python
+assert a.count() == b.count(), "row count changed"
+w = "t_dat >= date'2019-01-01' AND t_dat <= date'2019-01-31'"
+checks.assert_identical(a.filter(w), b.filter(w))
+```
+
+This is not a weaker check. A duplicate can only appear where the MERGE wrote, and damage outside
+that window necessarily moves the total.
 
 **Both reads must pin an explicit snapshot id** (corrected 2026-08-14). Reading the table without
 one and holding the DataFrame across the reload does not capture a "before" — Spark DataFrames are
@@ -324,6 +361,9 @@ python -m marketrank.jobs.backfill
 | `BindException` | stale hostname → DHCP address | already handled: loopback bind under `master="local*"` |
 | Job killed at 1 hour | no `--time` | add `#SBATCH --time=HH:MM:SS` |
 | Disk full during shuffle | spill landed on GPFS or home | verify `spark.local.dir` resolves under `/tmp` |
+| `Disk quota exceeded` on a warehouse write | bulk data on `project` or home, not `scratch` | check `config.WAREHOUSE` is under `~/scratch`; `df` will **not** show this — it reports the 3.7 PiB filesystem, not your quota |
+| `getquota` numbers contradict the error | report is per-group and may name a group your data is not in (it printed `timmermans`; this account's data is under `dijk`), and its Usage Details block is a once-daily snapshot | trust the failure over the table; confirm the real fileset with `readlink -f ~/scratch` |
+| Iceberg table unreadable after moving the warehouse | Hadoop catalog stores **absolute** paths in `.metadata.json` and every manifest | a moved warehouse is not portable — delete it and re-run the load |
 
 ---
 
