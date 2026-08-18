@@ -33,6 +33,9 @@ Execute phases in order. Each phase ends with a **CHECKPOINT** stating the expec
 | Java | `module load Java/17.0.4`. **Default is Java 21 — never `module load Java` bare** |
 | Nodes | 64 cores, ~480 GiB RAM (`day`, `week`, `devel`); `bigmem` has ~1.9 TiB |
 | Partitions | `devel` (2 nodes), `day` (14, **DefaultTime 1h**), `week` (10), `bigmem` (2) |
+| GPU partitions | **`gpu`** — 30 nodes, typed `gpu:{a100,h100,h200,a40,l40s}:4`, 32–48 cores, ~1 TB RAM, **MaxTime infinite**; `gpu_devel` — 3 × a40 (verified 2026-08-18) |
+| GPU request | `--gpus=1` untyped. Naming a type only narrows the queue; the two-tower is 13.5M params and fits any card here |
+| CUDA / torch | Cluster modules carry CUDA 12.0–12.8. Do **not** `module load PyTorch` into the venv (different Python from `foss-2022b`); pip a CUDA wheel into `.venv` instead |
 | Internet | Compute nodes reach Maven Central (HTTP 200) — `spark.jars.packages` works |
 
 **Do not use the `Spark/3.5.4-foss-2022b-Scala-2.13` module.** It is a Scala 2.13 build; our

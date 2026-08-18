@@ -6,26 +6,28 @@
 # wall clocks is itself worth recording.
 #
 # ---------------------------------------------------------------------------
-# RUN THIS RECON FIRST. The two directives below are the only thing in this file
-# that is guessed, because the 2026-08-14 recon table in docs/SETUP_MISHA.md
-# lists day / week / devel / bigmem and NO GPU partition. Resolve them, edit
-# them in, and note them in the recon table so the next person does not repeat
-# this:
+# RECON RESOLVED 2026-08-18 (the 2026-08-14 table in docs/SETUP_MISHA.md listed
+# no GPU partition; this is that gap filled).
 #
-#     sinfo -o "%20P %10G %10m %10c %10l %D" | grep -i gpu
-#       -> partition name, the gres string, mem, cores, MaxTime, node count
+#   sinfo -o "%20P %10G %10m %10c %10l %D" | grep -i gpu
 #
-#     scontrol show partition <NAME> | grep -E "MaxTime|DefaultTime|MaxNodes"
-#       -> the time limits, which differ from the CPU partitions
+#   gpu         gpu:a100:4  gpu:h100:4  gpu:h200:4  gpu:a40:4  gpu:l40s:4
+#               30 nodes, 32-48 cores, ~1 TB RAM, MaxTime INFINITE
+#   gpu_devel   gpu:a40:4, 3 nodes
 #
-# Slurm accepts either `--gpus=1` (newer) or `--gres=gpu:1` (older); the `%10G`
-# column above tells you which vocabulary this cluster speaks, and whether the
-# GPUs are typed (`gpu:a100:1`). Ask for ONE. This model is 13.5M parameters at
-# d=128 and does not shard.
+# GPUs are TYPED, so `--gres=gpu:a100:1` is available -- and deliberately not
+# used. This model is 13.5M parameters at d=128; every card on that list is
+# oversized for it, so naming one only narrows the queue and delays the start.
+# `--gpus=1` takes whichever is free first. If Slurm here is old enough to
+# reject `--gpus`, the equivalent is `--gres=gpu:1`.
+#
+# MaxTime is infinite, so --time is a scheduling choice rather than a cap:
+# shorter jobs start sooner. That makes the probe below worth more here, not
+# less.
 # ---------------------------------------------------------------------------
 
 #SBATCH --job-name=marketrank-towers-gpu
-#SBATCH --partition=REPLACE_FROM_RECON
+#SBATCH --partition=gpu
 #SBATCH --gpus=1
 #SBATCH --time=04:00:00
 #SBATCH --nodes=1
