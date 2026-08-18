@@ -77,10 +77,15 @@ BATCH=4096            # larger than the laptop's 1024: in-batch negatives scale
                       # changes the negative distribution -- report it.
 LR=3e-3
 TEMPERATURE=0.07
-N_UNIFORM=0           # R.3 HAS NOT RUN. train() raises NotImplementedError on a
-                      # non-zero value, deliberately -- a plumbed-and-inert
-                      # parameter is the bug class this build keeps finding. Set
-                      # this to R.3's measured winner once R.3 exists, not before.
+N_UNIFORM=16          # R.3's nominal best -- AND ITS DELTA IS INSIDE THE NOISE
+                      # FLOOR. Measured on the laptop: +0.051 recall@100 against
+                      # n_uniform=0, where 3 seeds of one config spread 0.051.
+                      # Carried under "keep the best; record all", because the
+                      # cost here is negligible and the tail-inflation mechanism
+                      # has more room on the full catalog than on the cohort.
+                      # DO NOT attribute any R.4 gain to this value: R.3 is a
+                      # null, and a second full-scale run to ablate it is
+                      # explicitly not worth its cost. See BUILD_NOTES R.3.
 RECENCY_HALF_LIFE=30  # days -- R.2's measured winner (+0.873 recall@100)
 LABEL="r4_scale_gpu"
 
