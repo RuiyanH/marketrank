@@ -36,6 +36,63 @@ from marketrank.retrieval import baselines as B
 EXPECT_PAIRS = 70_715
 EXPECT_CUSTOMERS = 20_000
 
+# Args that describe HOW A SOURCE WAS DERIVED. On the --sources-from path these
+# describe nothing: the parquets were built by an earlier run, possibly at other
+# settings, and argparse still fills these with defaults. Leaving them in the
+# artifact makes it assert bounds it never used -- and covisit's defaults (60/50)
+# are the ones measured as disk-fatal here, so the artifact would name the
+# configuration that crashes as the one that produced the numbers.
+DERIVATION_ARGS = (
+    "n_repurchase", "n_category", "n_global_pop", "n_covisit",
+    "covisit_lookback", "covisit_max_basket", "ann", "no_category",
+)
+
+# Which of them built which source -- the sidecar's contents.
+SOURCE_ARGS = {
+    "repurchase": ("n_repurchase",),
+    "category_pop": ("n_category",),
+    "global_pop": ("n_global_pop",),
+    "covisit": ("n_covisit", "covisit_lookback", "covisit_max_basket"),
+    "ann": ("ann",),
+}
+
+
+def source_meta_path(parquet: Path) -> Path:
+    return parquet.with_suffix(".meta.json")
+
+
+def write_source_meta(parquet: Path, name: str, args, as_of: str, rows: int) -> None:
+    """
+    Provenance beside the parquet, written when the source is materialised.
+
+    The sidecar is the durable half of the fix: a parquet that travels without
+    its settings is unauditable, and `artifacts/` is gitignored, so the JSON's
+    self-description is all a regenerated artifact has. This matters most for
+    runs produced on the cluster, which someone other than their author may read.
+    """
+    source_meta_path(parquet).write_text(
+        json.dumps(
+            {
+                "source": name,
+                "as_of": as_of,
+                "rows": rows,
+                "args": {
+                    k: (str(v) if isinstance(v, Path) else v)
+                    for k, v in vars(args).items()
+                    if k in SOURCE_ARGS.get(name, ())
+                },
+            },
+            indent=2, default=str,
+        )
+    )
+
+
+def read_source_meta(parquet: Path) -> dict | None:
+    mp = source_meta_path(parquet)
+    if not mp.exists():
+        return None
+    return json.loads(mp.read_text())
+
 
 def parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
@@ -104,6 +161,7 @@ def main(argv=None) -> dict:
 
     sources: dict = {}
 
+    loaded_meta: dict = {}
     if args.sources_from is not None:
         # Canonical order so `names` -- and therefore every leave-one-out --
         # is stable across runs and comparable run to run.
@@ -115,10 +173,16 @@ def main(argv=None) -> dict:
             path = args.sources_from / f"{name}.parquet"
             if path.exists() and name not in args.drop:
                 sources[name] = spark.read.parquet(str(path))
-                print(f"LOADED {name:<14} <- {path}")
+                meta = read_source_meta(path)
+                loaded_meta[name] = meta
+                shown = meta["args"] if meta else "NO SIDECAR -- provenance unknown"
+                print(f"LOADED {name:<14} <- {path}  {shown}")
         if not sources:
             raise SystemExit(f"no source parquets found under {args.sources_from}")
-        return _measure(spark, args, sources, truth, loaded_from=args.sources_from)
+        return _measure(
+            spark, args, sources, truth,
+            loaded_from=args.sources_from, source_meta=loaded_meta,
+        )
 
     sources[C.SOURCE_REPURCHASE] = C.repurchase_source(
         spark, as_of, n=args.n_repurchase
@@ -182,12 +246,17 @@ def main(argv=None) -> dict:
         path = src_dir / f"{name}.parquet"
         sources[name].write.mode("overwrite").parquet(str(path))
         sources[name] = spark.read.parquet(str(path))
-        print(f"MATERIALISED {name:<14} rows {sources[name].count():>9} -> {path}")
+        n_rows = sources[name].count()
+        write_source_meta(path, name, args, as_of, n_rows)
+        print(f"MATERIALISED {name:<14} rows {n_rows:>9} -> {path}")
 
     return _measure(spark, args, sources, truth)
 
 
-def _measure(spark, args, sources: dict, truth, loaded_from: Path | None = None) -> dict:
+def _measure(
+    spark, args, sources: dict, truth,
+    loaded_from: Path | None = None, source_meta: dict | None = None,
+) -> dict:
     """Union, ceiling, marginals, and the artifact -- shared by both entry paths."""
     names = tuple(sources)
     union = C.union_candidates(*sources.values(), source_names=names)
@@ -209,16 +278,33 @@ def _measure(spark, args, sources: dict, truth, loaded_from: Path | None = None)
     # machine, so the docstring's example command reproduces the crash rather
     # than the artifact. `run` is what makes the numbers auditable.
     lo, _hi = splits.bounds(args.slice)
+    derived = loaded_from is None
+    all_args = {
+        k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()
+    }
     run = {
         "as_of": lo,
         "slice": args.slice,
         "sources": list(names),
         "loaded_from": str(loaded_from) if loaded_from else None,
-        "derived": loaded_from is None,
-        "args": {
-            k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()
-        },
+        "derived": derived,
+        # On the loaded path the derivation args are argparse defaults that
+        # describe nothing. They are moved aside rather than echoed, because a
+        # reader who trusts `args` would otherwise attribute these numbers to
+        # covisit 60/50 -- the settings that exhaust this machine's disk.
+        "derivation_args_used": derived,
+        "args": (
+            all_args if derived
+            else {k: v for k, v in all_args.items() if k not in DERIVATION_ARGS}
+        ),
+        "source_provenance": (
+            {n: (source_meta or {}).get(n) for n in names} if not derived else None
+        ),
     }
+    if not derived:
+        run["derivation_args_ignored"] = {
+            k: v for k, v in all_args.items() if k in DERIVATION_ARGS
+        }
 
     args.out.mkdir(parents=True, exist_ok=True)
     out_name = args.out / "ceiling.json"

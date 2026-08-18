@@ -1971,7 +1971,7 @@ Now measured per source and written into the artifact, not just the prose:
 | `global_pop` | 3.168% | **100.0%** | 1.046% | 20.8 | 0.0503% |
 | `category_pop` | 2.162% | 92.9% | 1.199% | 31.4 | 0.0382% |
 
-**Co-visitation reaches 9,180 of 20,000 customers — 45.9%** (332,721 rows over
+**Co-visitation reaches 9,179 of 20,000 customers — 45.9%** (332,721 rows over
 36.25 slots per covered customer). It is the only source with a reach problem;
 two of the five cover the cohort completely.
 
@@ -2089,3 +2089,51 @@ remaining route                covisit at full 60/50 reach -> cluster run
 ```
 
 The plan's rule is explicit and it is not satisfied. R.5 stays open.
+
+### R.5b addendum — the provenance fix was only half done
+
+The first pass added a `run` block, but the five-source artifact was produced via
+`--sources-from`, where argparse still fills the derivation knobs with defaults.
+So the file recorded `covisit_lookback: 60, covisit_max_basket: 50` — the
+settings measured as **disk-fatal on this machine** — for numbers built at 30/20,
+and `ann: None` for a run whose ANN source came from `r2_recency`. `derived:
+false` was a hint, nothing said the knobs were inapplicable, and the true bounds
+lived only in the Makefile and this file's prose.
+
+That is worse than an omission: the artifact asserted the configuration that
+*crashes* as the one that produced the numbers.
+
+**Fix, both halves.**
+
+*Immediate:* on the loaded path the `DERIVATION_ARGS` are stripped from `args`
+and quarantined under `derivation_args_ignored`, with `derivation_args_used:
+false`. The artifact can no longer claim settings it did not use.
+
+*Durable:* `write_source_meta` emits `sources/<name>.meta.json` at
+materialisation, carrying only the args that built **that** source. On load they
+are read into `run.source_provenance` and echoed; a source without one prints
+`NO SIDECAR -- provenance unknown` rather than silently inheriting a default.
+Provenance now travels with the parquet, which is what matters once misha starts
+producing artifacts someone other than their author will read — and `artifacts/`
+is gitignored, so the JSON's self-description is all a regenerated artifact has.
+
+Verified on the regenerated five-source artifact:
+
+```
+derived                     false
+derivation_args_used        false
+args                        no covisit_lookback / covisit_max_basket / ann
+derivation_args_ignored     {n_covisit 40, covisit_lookback 60, covisit_max_basket 50}
+source_provenance.covisit   {n_covisit 40, covisit_lookback 30, covisit_max_basket 20}
+source_provenance.ann       artifacts/twotower/runs/r2_recency/ann_candidates.parquet
+UNION                       10.777%   (unchanged -- same measurement, honest description)
+```
+
+The five existing sidecars are **backfilled and flagged `backfilled: true`**,
+because those parquets predate the writer. A hand-written provenance record is
+the thing provenance exists to replace, so the flag distinguishes reconstruction
+from emission; sidecars written by a run carry no flag.
+
+Also corrected: this file said co-visitation reaches **9,180** customers; the
+artifact says **9,179**, and 332,721 / 36.248 agrees. In a build whose habit is
+reproducing figures to the digit, the prose has to match the artifact.
