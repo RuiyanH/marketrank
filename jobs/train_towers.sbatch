@@ -7,7 +7,9 @@
 # Prerequisite: the two-tower export exists in artifacts/twotower/, built with
 # the R.1 spine and the R.2 article-volume columns:
 #     python -m marketrank.retrieval.dataset 0 --article-volume
-# (cohort 0 meaning "no cap" — the full 1,371,980 customers). That export is a
+# (cohort 0 meaning "no cap" — the full 1,371,980 customers; this only became
+# true when the CLI learned to map <=0 to None. Before that it meant .limit(0),
+# an empty training set.) That export is a
 # Spark job and belongs in its own submission, not in this one; this job reads
 # parquet and never starts a session.
 

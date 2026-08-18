@@ -374,6 +374,11 @@ if __name__ == "__main__":
     # of the recovery ladder has to stay re-verifiable from disk, and an export
     # written in place takes its own rung's numbers with it.
     _n = int(sys.argv[1]) if len(sys.argv) > 1 and not sys.argv[1].startswith("-") else 100_000
+    # COHORT <= 0 means "no cap", i.e. every customer. `training_events` guards on
+    # `is not None`, so passing 0 straight through would `.limit(0)` and export an
+    # EMPTY training set -- a full-scale run that silently trains on nothing. The
+    # CLI previously had no way to express None at all.
+    _n = None if _n <= 0 else _n
     _vol = "--article-volume" in sys.argv
     _out = DATASET_DIR
     if "--out" in sys.argv:
