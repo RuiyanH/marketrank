@@ -2215,3 +2215,76 @@ sources/covisit.meta.json {n_covisit 60, covisit_lookback 30, covisit_max_basket
 `covisit_top_k` appears in the sidecar because it was registered in
 `SOURCE_ARGS` and `DERIVATION_ARGS` when the flag was added, which is the drift
 case the new import-time assert exists to enforce.
+
+---
+
+## Step R.5d — The reach lever, on misha
+
+The run R.5c named as the one the laptop could not host: covisit's cost bounds
+relaxed from 30/20, at the depths R.5c selected (`top_k 40`, `n 60`). Two steps,
+each changing bounds only — every other source, the cohort, and the ANN parquet
+are byte-identical across all three columns, so the union deltas are attributable.
+
+| | 30/20 (R.5c) | 60/50 | 90/50 |
+|---|---|---|---|
+| covisit rows | 518,147 | 774,593 | 871,251 |
+| covisit **reach** | 45.9% | **66.7%** | **74.4%** |
+| covisit solo | 3.501% | 4.470% | 4.805% |
+| covisit marginal | 1.908% | 2.493% | 2.661% |
+| covisit slots | 20.4 | 30.5 | 34.2 |
+| covisit **marginal/slot** | 0.0934% | 0.0817% | 0.0779% |
+| candidates/customer | 145.7 | 155.8 | 159.4 |
+| **UNION CEILING** | **11.176%** | **11.761%** | **11.930%** |
+
+### The noise floor does not apply to these numbers
+
+R.1b's floor (3 seeds, spread 0.051, sd 0.026) was measured on **two-tower
+training**, where seed variation is real. The ceiling job is deterministic: fixed
+cohort, fixed truth, no sampling, no initialisation. +0.585 and +0.169 are
+measurements, not draws. This is the first result in the recovery plan that needs
+no seed replication, and saying so matters — the floor has been applied
+correctly to every stochastic result and must not be applied superstitiously
+where there is no stochasticity to floor.
+
+### Reach was the lever, exactly as R.5c predicted — and it is nearly spent
+
+1. **Reach moved, and it was the whole mechanism.** 45.9% → 66.7% → 74.4%.
+   R.5c established that depth cannot buy reach (45.9% before and after a 55.7%
+   row increase); this establishes the converse, that the lookback buys it
+   directly. The 60-day shape measurement — 443,559 customers active in 60 days
+   against 256,753 in 30 — predicted this before the run.
+2. **Efficiency fell at every step**, 0.0934% → 0.0817% → 0.0779% per slot. The
+   newly reached customers are the ones with thinner histories, so each cohort
+   of them is worth less than the last. This is the same diminishing-returns
+   shape depth showed, on the other axis.
+3. **The marginal slot is now a bad buy.** Per slot *added*, step one returned
+   0.0579% (better than `ann`, `global_pop` and `category_pop`) and step two
+   returned 0.0469% (worse than `ann`, level with `global_pop`). The lever
+   crossed from "cheapest slots in the build" to "median slots in the build" in
+   one step.
+
+### 11.930% against a 12% gate
+
+0.070 points short, with the covisit lever's next step projected to return less
+than the one that just returned 0.169. Extrapolating the reach series (+20.8,
++7.7, → ~+3pp) puts 120/50 at roughly 12.0% — i.e. the gate would be *touched*
+rather than cleared, bought at the worst efficiency yet measured, and R.5's
+checkpoint asks for **comfortably above 12%**.
+
+**What is NOT measured, and should be said plainly:** the 30/20 → 60/50 step
+moved lookback *and* max_basket together. 60/50 → 90/50 moved lookback alone. So
+`max_basket`'s independent contribution is confounded inside the +0.585 and is
+unknown. A 60/20 run would separate them for one job's cost. It is not on the
+critical path — the decision below does not turn on it — but no claim should be
+made about basket width until it runs.
+
+### Where the remaining headroom actually is
+
+`ann` contributes 4.156% solo at 0.0554%/slot from **the tower that lost to
+popularity**. It is the only source in the table whose underlying model is known
+to be broken and whose repair is already planned (R.3's mixed negatives, R.4's
+scale). Squeezing 0.07 points out of a lever measured to be exhausting is worse
+value than the source with a known defect and an unrun fix. R.5's parallel track
+has delivered what it was for: +1.153 points over the committed configuration
+(10.777% → 11.930%), and the ceiling is no longer what blocks the tower — the
+tower is.
