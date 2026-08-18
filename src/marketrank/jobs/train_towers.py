@@ -70,6 +70,28 @@ def parse_args(argv=None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def _git_provenance() -> dict:
+    """Commit and cleanliness of the tree that produced this run."""
+    import subprocess
+
+    def _run(*cmd):
+        try:
+            return subprocess.run(
+                cmd, cwd=Path(__file__).resolve().parents[3],
+                capture_output=True, text=True, timeout=10, check=True,
+            ).stdout.strip()
+        except Exception:
+            return None
+
+    sha = _run("git", "rev-parse", "HEAD")
+    status = _run("git", "status", "--porcelain")
+    return {
+        "sha": sha,
+        # None means the git call failed, which is NOT the same as clean.
+        "dirty": None if status is None else bool(status),
+    }
+
+
 def main(argv=None) -> dict:
     args = parse_args(argv)
     if args.threads:
@@ -111,6 +133,12 @@ def main(argv=None) -> dict:
 
     metrics = {
         "label": args.label,
+        # PROVENANCE. candidate_ceiling.py has written a `run` block since R.5;
+        # this job wrote none, so r3_uniform16/64/256 record no sha at all and
+        # cannot be bound to the code that produced them after the fact. `dirty`
+        # is the load-bearing half: a clean sha is a reproduction recipe, a
+        # dirty one is a warning that the sha does not describe what ran.
+        "code": _git_provenance(),
         "args": {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()},
         "n_eval_customers": len(ev["customer_id"]),
         "n_true_pairs": n_pairs,

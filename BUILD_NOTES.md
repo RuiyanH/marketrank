@@ -2288,3 +2288,83 @@ value than the source with a known defect and an unrun fix. R.5's parallel track
 has delivered what it was for: +1.153 points over the committed configuration
 (10.777% → 11.930%), and the ceiling is no longer what blocks the tower — the
 tower is.
+
+---
+
+## Step R.3 — Mixed negatives: a null, and a retracted objection
+
+In-batch negatives are drawn from the POSITIVE distribution, so an article
+nobody buys is almost never a negative and the tail can inflate unpenalised.
+Retrieval at k=100 is where that should bite. Uniform negatives price the tail.
+`n_uniform` ∈ {0, 16, 64, 256} at `recency_half_life=30`, `article_volume=False`,
+seed 0 — one 16× sweep, everything else held.
+
+| n_uniform | r@12 | r@100 | r@500 | Δ r@100 vs 0 |
+|---|---|---|---|---|
+| 0 (`r2_recency`) | 1.430% | 6.659% | 18.214% | — |
+| **16** | 1.407% | **6.710%** | 18.405% | **+0.051** |
+| 64 | 1.341% | 6.451% | 18.166% | −0.208 |
+| 256 | 1.396% | 6.608% | 18.227% | −0.051 |
+
+**Noise floor (R.1b, 3 seeds, identical config): spread 0.051, sd 0.025.**
+
+### The lever is null
+
+The best rung beats baseline by **exactly one noise spread**, and the response is
+not monotone — 16 up, 64 down, 256 back up. With three non-zero rungs sampled,
+the best of them clearing baseline by one spread is what chance produces on its
+own. `r@500` is the sharper test of the stated mechanism, because pricing the
+tail should surface at deep k before k=100, and it agrees: +0.191, −0.048, +0.013
+across a 16× range.
+
+Two things that are NOT evidence and were nearly read as such:
+
+* **Loss is not comparable across these runs.** The softmax denominator is
+  `B + n_uniform` columns, so 256's higher loss (6.722 vs 64's 6.522) is mostly
+  the wider denominator. This build has already been misled once by
+  loss/recall anti-correlation; the rule is that loss compares only within a
+  fixed denominator.
+* **The floor was measured at `recency=0`, this arm runs `recency=30`.** The 64
+  rung sits 8 sd below baseline on that floor, which is either a real dip or
+  evidence the floor understates variance under recency weighting. Not separable
+  without seed replicates at this config. It does not change the decision:
+  nothing beat baseline.
+
+### RETRACTED: the mixed-proposal logQ objection
+
+Before the sweep ran, this build recorded a blocking objection — that for a
+mixed proposal the correction should be `log(p·freq(a) + (1−p)/N)` rather than
+each component's own probability, and that no null could be recorded until that
+was tested. **The objection does not apply to this implementation.** The uniform
+columns are APPENDED, not merged into one proposal: each column is an
+independent draw from a known distribution and is corrected with that
+distribution's probability — `log_q[arts]` in-batch, `log(1/(N−1))` uniform. The
+mixture formula is the right one when a single column could have come from
+either pool, which is a different design. The null stands on its own.
+
+Residual, measured not hand-waved: an article can land in both pools in one
+step, giving two columns for one article under two corrections. Expected ~2.5
+collisions per step at `n_uniform=256` against a ~105k catalog. Negligible.
+
+### Decision carried into R.4: `n_uniform=16`, labelled as within-noise
+
+Pre-registered rule was "keep the best; record all". 16 is the nominal best, is
+directionally positive on all three of r@100, r@500 and the union it feeds, and
+its cost at GPU scale is negligible. The tail-inflation mechanism also has
+strictly more room to matter on the full catalog and full training slice than on
+this cohort.
+
+**But its laptop delta is inside the noise floor, and the R.4 writeup must say
+so.** If R.4 improves, that improvement belongs to scale until something
+measures otherwise — it must not be attributed to R.3. A second full-scale run
+to ablate `n_uniform` at GPU scale is explicitly NOT worth its cost.
+
+### Provenance gap found while closing this step
+
+`train_towers.py` wrote no sha. The three R.3 metrics files therefore record
+nothing about the code that produced them and cannot be bound to it after the
+fact — the mixed-negatives code was uncommitted while they ran, and is now
+`c70d448`. Fixed forward: metrics carry `code.sha` and `code.dirty` from here on,
+with `dirty` distinguished from a failed git call, so R.4's expensive runs are
+auditable from birth. The three R.3 rungs stay unbound; that is recorded rather
+than repaired, because a rerun would bind them to code that is not what ran.
