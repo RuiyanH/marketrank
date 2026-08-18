@@ -146,6 +146,11 @@ def parse_args(argv=None) -> argparse.Namespace:
         metavar="SOURCE",
         help="drop a source by name; repeatable",
     )
+    # Hardcoded at 10g while this only ever ran on a 16 GiB laptop. The covisit
+    # bounds this job most needs to explore (60/50 -> a 35.7M-pair self-join)
+    # are exactly the ones 10g cannot hold, so the knob and the question it
+    # blocks are the same knob. Default unchanged: the laptop path still works.
+    p.add_argument("--driver-memory", default="10g")
     p.add_argument("--out", type=Path, default=Path("artifacts/candidates"))
     p.add_argument("--expect-pairs", type=int, default=EXPECT_PAIRS)
     return p.parse_args(argv)
@@ -155,7 +160,7 @@ def main(argv=None) -> dict:
     from marketrank.spark import get_spark
 
     args = parse_args(argv)
-    spark = get_spark("candidate_ceiling", driver_memory="10g")
+    spark = get_spark("candidate_ceiling", driver_memory=args.driver_memory)
 
     lo, _hi = splits.bounds(args.slice)
     as_of = lo
