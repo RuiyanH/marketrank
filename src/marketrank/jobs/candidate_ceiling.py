@@ -44,7 +44,7 @@ EXPECT_CUSTOMERS = 20_000
 # configuration that crashes as the one that produced the numbers.
 DERIVATION_ARGS = (
     "n_repurchase", "n_category", "n_global_pop", "n_covisit",
-    "covisit_lookback", "covisit_max_basket", "ann", "no_category",
+    "covisit_lookback", "covisit_max_basket", "covisit_top_k", "ann", "no_category",
 )
 
 # Which of them built which source -- the sidecar's contents.
@@ -52,9 +52,21 @@ SOURCE_ARGS = {
     "repurchase": ("n_repurchase",),
     "category_pop": ("n_category",),
     "global_pop": ("n_global_pop",),
-    "covisit": ("n_covisit", "covisit_lookback", "covisit_max_basket"),
+    "covisit": ("n_covisit", "covisit_lookback", "covisit_max_basket", "covisit_top_k"),
     "ann": ("ann",),
 }
+
+
+# DRIFT GUARD. These two structures are hand-maintained and parallel: a future
+# source whose flag lands in SOURCE_ARGS but not DERIVATION_ARGS would ride into
+# `args` unquarantined on the loaded path, silently reinstating the defect the
+# sidecars exist to prevent. Fail at import rather than in an artifact nobody
+# re-reads. `no_category` is deliberately outside SOURCE_ARGS: it composes the
+# source set rather than building any one source.
+assert set().union(*SOURCE_ARGS.values()) <= set(DERIVATION_ARGS), (
+    "SOURCE_ARGS references args missing from DERIVATION_ARGS: "
+    f"{set().union(*SOURCE_ARGS.values()) - set(DERIVATION_ARGS)}"
+)
 
 
 def source_meta_path(parquet: Path) -> Path:
@@ -110,6 +122,12 @@ def parse_args(argv=None) -> argparse.Namespace:
     # as cost knobs: see covisit.py's module docstring.
     p.add_argument("--covisit-lookback", type=int, default=covisit.LOOKBACK_DAYS)
     p.add_argument("--covisit-max-basket", type=int, default=covisit.MAX_BASKET)
+    # `covisit_pairs` has always taken top_k; nothing passed it, so
+    # TOP_K_PER_ARTICLE was reachable only by editing the module. It is one of
+    # the two knobs the depth probe needs (with --n-covisit), and it binds
+    # before `n` does: 20 co-visited articles per seed caps what `n=40` can
+    # collect long before the per-customer budget does.
+    p.add_argument("--covisit-top-k", type=int, default=covisit.TOP_K_PER_ARTICLE)
     p.add_argument("--no-category", action="store_true")
     # Re-measure a different SUBSET of an existing run without recomputing any
     # source. The sources are written to parquet by every run (see the
@@ -204,6 +222,7 @@ def main(argv=None) -> dict:
         n=args.n_covisit,
         lookback_days=args.covisit_lookback,
         max_basket=args.covisit_max_basket,
+        top_k=args.covisit_top_k,
     )
 
     if args.ann is not None and args.ann.exists():
