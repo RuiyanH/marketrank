@@ -158,3 +158,73 @@ at all.
 uncompressed, ~110 GB at parquet+zstd** — inside the spec's 40–160 GB estimate,
 and the reason that job is the one genuinely cluster-shaped step. This build ran
 2,091,944 rows of it (0.077%) on a laptop.
+
+## Stage 1: is the two-tower worth keeping?
+
+The retrieval model **loses to the naive baselines on its own** — recall@100 of
+6.66% against a popularity+repurchase union's 6.97%, on 20,000 held-out
+customers and 70,715 true pairs. By week 3's original checkpoint ("beat the
+baseline union") it fails.
+
+It is kept anyway, and the reason is that the checkpoint asked the wrong
+question. Stage 1 is not a single retriever, it is a **union of candidate
+sources**, and a source earns its place by what the union loses without it, per
+candidate slot it occupies — not by whether it beats the whole union alone.
+
+Measured on that basis, at a fixed budget of 138 candidates per customer:
+
+| source | solo ceiling | reach | marginal | slots | **marginal/slot** |
+|---|---|---|---|---|---|
+| co-visitation | 2.80% | 45.9% | 1.51% | 12.8 | **0.1176%** |
+| repurchase | 2.92% | 92.9% | 1.76% | 19.3 | 0.0916% |
+| **two-tower (ANN)** | **4.16%** | 100.0% | 1.71% | 29.9 | **0.0573%** |
+| global popularity | 3.17% | 100.0% | 1.05% | 20.8 | 0.0503% |
+| category popularity | 2.16% | 92.9% | 1.20% | 31.4 | 0.0382% |
+| **union** | **10.78%** | | 138.1 | |
+
+The tower has the **highest solo coverage of any single source** and clears the
+weakest heuristic on marginal-per-slot, so it stays. The decision rule was fixed
+*before* these numbers existed, which is what stops it being a rationalisation,
+and it survives both obvious challenges: drop category popularity and the bar
+becomes global popularity's 0.0525% against the tower's 0.0594% — still a keep;
+propagate the measured run-to-run noise (0.051 recall points, sd 0.026) through
+29.9 slots and it is ±0.003 against a margin of 0.019, roughly 7x smaller.
+
+**Provisional.** Two planned experiments — mixed negative sampling and a
+full-scale training run — have not been done, and both can only move the tower
+up.
+
+### What actually fixed retrieval, and what did not
+
+| change | recall@100 | vs. noise floor (0.051) |
+|---|---|---|
+| starting point | 5.53% | — |
+| feature spine repair | 5.79% | +0.26, 5x |
+| **recency-weighted positives** | **6.66%** | **+0.87, 17x** |
+| article volume features | 5.32% | **−0.46, a leak** |
+
+Weighting recent purchases more heavily closed 74% of the gap with one
+hyperparameter. Feeding the tower article popularity features — the intuitive
+fix, and the one the recovery plan recommended — made it **worse**, and the loss
+curve says why: those features lower training loss at every epoch while lowering
+recall at every epoch. Each article in a training batch carries volume as of its
+own event day, so the model can identify the right answer by matching
+day-stamps rather than learning taste; at scoring time every article shares one
+day, the shortcut evaporates, and what was learned on it is worthless.
+
+That is the second time in this project that the lower training loss belonged to
+the worse model — the first was omitting the sampled-softmax logQ correction,
+worth 17x on recall@500. Both were caught by measuring held-out retrieval rather
+than watching the objective.
+
+### Known limits of this result
+
+- The candidate ceiling is **10.78%**, below the 12% this stage was targeting, so
+  stage 2 is not yet unblocked. Removing the least efficient source was measured
+  and made it *worse* (9.58%); the remaining route is co-visitation at a 60-day
+  lookback rather than the 30-day one that fits a laptop.
+- Co-visitation reaches only **46%** of customers at that reduced lookback, so
+  its leading per-slot efficiency partly reflects spending slots only where it
+  has signal.
+- Everything above is reduced scale: 300,000 of 1.37M customers, 2.9M of ~28M
+  training positives, d=64.

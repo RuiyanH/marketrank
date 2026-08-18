@@ -59,5 +59,37 @@ test: render-conf ## Full pytest suite, Spark tests included
 test-fast: ## pytest without the Spark tests
 	.venv/bin/pytest -q -m "not spark"
 
+# --- R.5: candidate sources and the recall ceiling --------------------------
+# These encode the invocation that produced the committed artifact. The CLI
+# defaults are NOT it: covisit's defaults (60-day lookback, 50-article basket)
+# are a 35.7M-pair self-join that exhausted this machine's disk twice, so the
+# docstring's bare example reproduces the crash rather than the numbers.
+COVISIT_LOOKBACK ?= 30
+COVISIT_MAX_BASKET ?= 20
+ANN_RUN ?= r2_recency
+
+ann-candidates: ## Export a trained tower's top-N as a candidate source
+	$(PY) -m marketrank.jobs.ann_candidates --run $(ANN_RUN) --top-n 50
+
+ceiling: render-conf ## Derive all sources and measure the recall ceiling (slow: Spark)
+	$(PY) -m marketrank.jobs.candidate_ceiling \
+	    --ann artifacts/twotower/runs/$(ANN_RUN)/ann_candidates.parquet \
+	    --covisit-lookback $(COVISIT_LOOKBACK) \
+	    --covisit-max-basket $(COVISIT_MAX_BASKET)
+
+# Re-measure a SUBSET of the last run without recomputing a single source.
+# Every run materialises its sources to parquet, so this is a union over five
+# small tables -- seconds, not the derivation that needed a disk guard.
+#   make ceiling-subset DROP=category_pop OUT=artifacts/candidates_nocat
+DROP ?= category_pop
+OUT ?= artifacts/candidates_subset
+ceiling-subset: render-conf ## Re-measure the ceiling without a source (fast)
+	$(PY) -m marketrank.jobs.candidate_ceiling \
+	    --sources-from artifacts/candidates/sources \
+	    --drop $(DROP) --out $(OUT)
+
+clean-spark-tmp: ## Remove shuffle spill left behind by a crashed Spark job
+	rm -rf .spark-tmp/* 2>/dev/null || true
+
 clean-dbt:
 	rm -rf dbt/target dbt/logs

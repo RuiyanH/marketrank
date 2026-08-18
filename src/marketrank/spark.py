@@ -1,6 +1,15 @@
+import os
+from pathlib import Path
+
 from pyspark.sql import SparkSession
 
 from marketrank import config
+
+# Where shuffle spill lands. Overridable so misha can point it at node-local
+# /tmp (SETUP_MISHA Phase 3b) while the laptop keeps it inside the repo.
+SPARK_TMP = Path(
+    os.environ.get("MARKETRANK_SPARK_TMP", config.PROJECT_ROOT / ".spark-tmp")
+)
 
 
 def get_spark(
@@ -29,6 +38,14 @@ def get_spark(
         .appName(app_name)
         .master(master)
         .config("spark.driver.memory", driver_memory)
+        # Spill goes somewhere KNOWN. Left unset it lands in the OS temp dir,
+        # where it is neither bounded nor visible -- which is how R.5's
+        # co-visitation job silently retained 5.2 GB of orphaned shuffle across
+        # two crashes and took the machine to 332 MiB free. Pointing it into the
+        # repo does not make spill smaller; it makes it findable, measurable and
+        # cleanable, and it is the same routing SETUP_MISHA Phase 3b does on the
+        # cluster for a different reason (GPFS handles small-file churn badly).
+        .config("spark.local.dir", str(SPARK_TMP))
     )
 
     if master.startswith("local"):

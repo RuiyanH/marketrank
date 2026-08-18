@@ -54,6 +54,23 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--covisit-lookback", type=int, default=covisit.LOOKBACK_DAYS)
     p.add_argument("--covisit-max-basket", type=int, default=covisit.MAX_BASKET)
     p.add_argument("--no-category", action="store_true")
+    # Re-measure a different SUBSET of an existing run without recomputing any
+    # source. The sources are written to parquet by every run (see the
+    # materialisation note below), so a question like "what is the ceiling
+    # without category_pop" is a union over five small tables, not a rebuild.
+    p.add_argument(
+        "--sources-from",
+        type=Path,
+        default=None,
+        help="load sources from a previous run's sources/ dir instead of deriving them",
+    )
+    p.add_argument(
+        "--drop",
+        action="append",
+        default=[],
+        metavar="SOURCE",
+        help="drop a source by name; repeatable",
+    )
     p.add_argument("--out", type=Path, default=Path("artifacts/candidates"))
     p.add_argument("--expect-pairs", type=int, default=EXPECT_PAIRS)
     return p.parse_args(argv)
@@ -87,6 +104,22 @@ def main(argv=None) -> dict:
 
     sources: dict = {}
 
+    if args.sources_from is not None:
+        # Canonical order so `names` -- and therefore every leave-one-out --
+        # is stable across runs and comparable run to run.
+        order = [
+            C.SOURCE_REPURCHASE, C.SOURCE_CATEGORY, C.SOURCE_GLOBAL_POP,
+            C.SOURCE_COVISIT, C.SOURCE_ANN,
+        ]
+        for name in order:
+            path = args.sources_from / f"{name}.parquet"
+            if path.exists() and name not in args.drop:
+                sources[name] = spark.read.parquet(str(path))
+                print(f"LOADED {name:<14} <- {path}")
+        if not sources:
+            raise SystemExit(f"no source parquets found under {args.sources_from}")
+        return _measure(spark, args, sources, truth, loaded_from=args.sources_from)
+
     sources[C.SOURCE_REPURCHASE] = C.repurchase_source(
         spark, as_of, n=args.n_repurchase
     ).join(F.broadcast(cohort), "customer_id", "inner")
@@ -115,6 +148,9 @@ def main(argv=None) -> dict:
             .join(F.broadcast(cohort), "customer_id", "inner")
             .select("customer_id", "article_id", "source", "source_rank")
         )
+
+    for name in args.drop:
+        sources.pop(name, None)
 
     names = tuple(sources)
     print("SOURCES", names)
@@ -148,6 +184,12 @@ def main(argv=None) -> dict:
         sources[name] = spark.read.parquet(str(path))
         print(f"MATERIALISED {name:<14} rows {sources[name].count():>9} -> {path}")
 
+    return _measure(spark, args, sources, truth)
+
+
+def _measure(spark, args, sources: dict, truth, loaded_from: Path | None = None) -> dict:
+    """Union, ceiling, marginals, and the artifact -- shared by both entry paths."""
+    names = tuple(sources)
     union = C.union_candidates(*sources.values(), source_names=names)
     union.cache()
     stats = C.candidate_set_stats(union, source_names=names)
@@ -160,29 +202,50 @@ def main(argv=None) -> dict:
     print("CEILING", json.dumps(ceiling, indent=2))
     print("MARGINAL", json.dumps(marg, indent=2))
 
+    # PROVENANCE. Without this the artifact cannot be reproduced from itself:
+    # the covisit bounds actually used, the ANN parquet consumed, `as_of` and
+    # the per-source depths all lived only in the shell history. Worse, the CLI
+    # DEFAULTS (60/50) are settings this build measured as disk-fatal on this
+    # machine, so the docstring's example command reproduces the crash rather
+    # than the artifact. `run` is what makes the numbers auditable.
+    lo, _hi = splits.bounds(args.slice)
+    run = {
+        "as_of": lo,
+        "slice": args.slice,
+        "sources": list(names),
+        "loaded_from": str(loaded_from) if loaded_from else None,
+        "derived": loaded_from is None,
+        "args": {
+            k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()
+        },
+    }
+
     args.out.mkdir(parents=True, exist_ok=True)
-    (args.out / "ceiling.json").write_text(
+    out_name = args.out / "ceiling.json"
+    out_name.write_text(
         json.dumps(
-            {"stats": stats, "ceiling": ceiling, "marginal": marg},
+            {"run": run, "stats": stats, "ceiling": ceiling, "marginal": marg},
             indent=2, default=str,
         )
     )
+    print(f"WROTE {out_name}")
 
     # The table R.5's checkpoint asks for, and R.6's criterion reads.
     print("\nSOURCE CONTRIBUTION AT FIXED BUDGET "
           f"({stats['mean_candidates_per_customer']:.1f} candidates/customer)")
-    print(f"{'source':<14}{'solo':>9}{'marginal':>10}{'slots':>9}{'marg/slot':>12}")
+    print(f"{'source':<14}{'solo':>9}{'reach':>8}{'marginal':>10}{'slots':>9}{'marg/slot':>12}")
     for name, d in sorted(
         marg["sources"].items(), key=lambda kv: -kv[1]["marginal_per_slot"]
     ):
         print(
-            f"{name:<14}{d['solo']*100:>8.3f}%{d['marginal']*100:>9.3f}%"
+            f"{name:<14}{d['solo']*100:>8.3f}%{d['reach_frac']*100:>7.1f}%"
+            f"{d['marginal']*100:>9.3f}%"
             f"{d['marginal_slots']:>9.1f}{d['marginal_per_slot']*100:>11.4f}%"
         )
     print(f"{'UNION':<14}{ceiling['recall_ceiling']*100:>8.3f}%")
 
     spark.stop()
-    return {"stats": stats, "ceiling": ceiling, "marginal": marg}
+    return {"run": run, "stats": stats, "ceiling": ceiling, "marginal": marg}
 
 
 if __name__ == "__main__":

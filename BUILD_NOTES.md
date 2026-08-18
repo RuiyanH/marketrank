@@ -1865,7 +1865,7 @@ dominant-category popularity at equal depth; recency weighting worth +0.873; and
 now co-visitation leading on efficiency. **The short-horizon signal on this
 dataset is trend and sequence, not identity.**
 
-### FINDING 3 — `category_pop` should be dropped
+### FINDING 3 — `category_pop` should be dropped  **[SUPERSEDED — see R.5b, it is a net loss]**
 
 Worst on every axis: lowest solo (2.162%), lowest marginal per slot (0.0382%),
 and the **largest slot cost of any source (31.4)**. It is 31 slots spent at a
@@ -1921,3 +1921,171 @@ plan's target            "comfortably above 12%"
 cheapest untried path    drop category_pop, deepen covisit
 also untried             covisit at full 60/50 bounds -- needs the cluster
 ```
+
+---
+
+## Step R.5b — Review response: gaps closed, and one finding overturned
+
+R.5 was reviewed against its artifact. The numbers, the PIT discipline and the
+disk post-mortem all held; the gaps were reproducibility, an unstated reach
+bound, a decision declared ahead of its gate, missing tests, and one conclusion
+that turned out to be **wrong**. All are closed below.
+
+### THE OVERTURNED FINDING — dropping `category_pop` is a LOSS, not a win
+
+R.5's Finding 3 said `category_pop` "should be dropped": worst solo, worst
+marginal-per-slot, largest slot cost. Measured rather than argued:
+
+| config | ceiling | candidates/customer |
+|---|---|---|
+| all five sources | **10.777%** | 138.1 |
+| without `category_pop` | **9.578%** | 106.7 |
+
+The drop costs **−1.199 points**, which is *exactly* `category_pop`'s recorded
+marginal, and frees **31.4** slots, exactly its recorded marginal slots. That
+identity is a good validation of the measurement machinery and a bad outcome for
+the recommendation.
+
+The error was reading "least efficient" as "not worth its slots". They are
+different claims: a source can be the worst per slot and still contribute
+positively, and removing it only pays if the freed slots buy back more than
+1.199 points elsewhere — which requires deepening another source, which was
+never measured. The review's caveat (marginal is value *at current depth*;
+removal frees slots but does not reallocate them) is the whole story, and the
+sign was not knowable without running it.
+
+Also visible, and worth stating so marginals are not read as absolutes: dropping
+one source **raises** every survivor's marginal, because less redundancy remains
+to absorb the loss — `covisit` 1.509% → 1.626%, `ann` 1.714% → 1.885%,
+`repurchase` 1.765% → 1.888%, `global_pop` 1.046% → 1.165%.
+
+### REACH — the bound that changes what "deepen covisit" can buy
+
+Now measured per source and written into the artifact, not just the prose:
+
+| source | solo | **reach** | marginal | slots | marginal/slot |
+|---|---|---|---|---|---|
+| `covisit` | 2.803% | **45.9%** | 1.509% | 12.8 | 0.1176% |
+| `repurchase` | 2.916% | 92.9% | 1.765% | 19.3 | 0.0916% |
+| `ann` | 4.156% | **100.0%** | 1.714% | 29.9 | 0.0573% |
+| `global_pop` | 3.168% | **100.0%** | 1.046% | 20.8 | 0.0503% |
+| `category_pop` | 2.162% | 92.9% | 1.199% | 31.4 | 0.0382% |
+
+**Co-visitation reaches 9,180 of 20,000 customers — 45.9%** (332,721 rows over
+36.25 slots per covered customer). It is the only source with a reach problem;
+two of the five cover the cohort completely.
+
+Two consequences, and together they redirect the push to 12%:
+
+1. Its chart-topping 0.1176%/slot is partly an artifact of **spending slots only
+   where it has signal**. Comparing it per-slot against a 100%-reach source is
+   not comparing like with like.
+2. Reallocating freed slots "to covisit" **cannot spend them on the other 54% of
+   customers**, and within covered customers it is already near its cap (36.2
+   mean against `n=40`, with `top_k=20` and `recent_k=10` binding first).
+
+So the remaining route to the target is **more reach, not more depth** — the
+full 60-day lookback, which is the configuration that exhausted this machine's
+disk and therefore a cluster run.
+
+### DECOMPOSITION — the +3.302 was not all R.5
+
+R.5's headline credited the whole ceiling gain to the new sources, while `ann`'s
+solo coverage had also moved (3.329% → 4.156%) because R.2's recency weighting
+flowed through it. Measured by re-running the **old three-source configuration
+with the new tower** — free, from the materialised sources, and confirmed to be
+the same configuration because `repurchase` (2.916%) and `category_pop` (2.162%)
+reproduce their reference-build solo figures to the digit:
+
+```
+3 sources + old tower (reference build)   7.475%
+3 sources + NEW tower                     8.148%    +0.673   <- R.2 propagation
+5 sources + new tower                    10.777%    +2.629   <- R.5 proper
+                                                    ------
+                                                    +3.302
+```
+
+**80% of the gain is R.5's, 20% is R.2's arriving late.** Both real; the ledger
+now says which is which.
+
+### R.6 — the KEEP stands, and is now labelled PROVISIONAL
+
+The plan places the decision *after* the time-boxed week; **R.3 (mixed
+negatives) and R.4 (scale) have not run**, so declaring it in R.5 was premature
+even though the direction is safe (both can only improve `ann`, and the bar is
+already cleared). Recorded as **provisional pending R.3/R.4**, with the two
+robustness checks the review supplied, both now measured rather than assumed:
+
+*Robust to the `category_pop` drop.* If that source goes, the weakest heuristic
+becomes `global_pop`; in the actually-measured four-source configuration that is
+**0.0525%/slot against `ann`'s 0.0594%**. The rule still returns KEEP, so the
+decision does not depend on a source-set choice that is itself unsettled.
+
+*Robust to the noise floor.* R.1b measured recall run-to-run spread at 0.051
+points (sd 0.026). Propagated through `ann`'s 29.9 marginal slots that is
+**≈ ±0.003 per slot**, against a margin of 0.0573 − 0.0382 = **0.0191** — about
+**7x larger than the noise**. The KEEP is not a coin flip at the boundary.
+
+Written up in the README, which is what R.6's checkpoint actually asks for and
+which R.5 had not done.
+
+### TESTS — `covisit.py` now has them, mutation-checked
+
+R.0's doctrine applied to the source R.6's number depends on: ~190 lines of
+self-join, window and decay logic with no tests at all. Two added, each
+confirmed to fail against the bug it exists for:
+
+| mutation | arithmetic test | PIT test |
+|---|---|---|
+| *(none — restored)* | pass | pass |
+| decay dropped (`w := 1.0`) | **FAIL** | pass |
+| PIT boundary `<` → `<=` | pass | **FAIL** |
+
+The arithmetic test asserts hand-computed **scores**, not ordering: an
+implementation that dropped the decay entirely still ranks correctly, so an
+order-only test would have passed it. The PIT test is the covisit analogue of
+step 2.1's truncation property — append events dated exactly `as_of` and require
+every score to be unchanged.
+
+### REPRODUCIBILITY — the artifact now records its own invocation
+
+`ceiling.json` recorded no `as_of`, no covisit bounds, no ANN parquet path and
+no depths, so the run could not be reproduced from it. Worse, the CLI **defaults**
+(60-day lookback, 50-article basket) are the settings this build measured as
+disk-fatal here, so the docstring's example command reproduces the crash rather
+than the artifact.
+
+Fixed: every run writes a `run` block with `as_of`, slice, source list, full
+`vars(args)`, and whether sources were derived or loaded. `make ceiling` and
+`make ceiling-subset` encode the real invocation, and `make clean-spark-tmp`
+exists because spill is now somewhere findable.
+
+### Code fixes carried in the same pass
+
+- `covisit_source` took `max_basket` only through `**kwargs` and then built its
+  seeds with the module constant — silently ignoring the argument. Benign while
+  `recent_k=10` sits below both caps; a real bug the moment it does not.
+- `solo_slots` averaged over *covered* customers while `solo` is a cohort-wide
+  ceiling — different denominators, so a naive `solo/solo_slots` comparison
+  across sources is wrong, `covisit` most of all. Renamed
+  `solo_slots_per_covered_customer` and paired with `reach_*`. Unused in the
+  decision (`marginal_per_slot`'s terms are both cohort-wide), but it was a trap
+  sitting in the artifact.
+- `_recent_events`' docstring said "most recent `max_basket` articles"; the cap
+  is on distinct (article, day) **events** — an article bought on three days
+  consumes three slots.
+- `spark.local.dir` is set, to a repo-local `.spark-tmp` overridable by
+  `MARKETRANK_SPARK_TMP` (the same routing SETUP_MISHA Phase 3b does on the
+  cluster). Spill was landing in the OS temp dir, which is how two crashes
+  retained 5.2 GB invisibly.
+
+### R.5's CHECKPOINT IS NOT MET — week 5 stays blocked
+
+```
+ceiling now                   10.777%
+plan's target                 "comfortably above 12% before week 5 restarts"
+drop category_pop              9.578%   -- measured, a LOSS, not the path
+remaining route                covisit at full 60/50 reach -> cluster run
+```
+
+The plan's rule is explicit and it is not satisfied. R.5 stays open.

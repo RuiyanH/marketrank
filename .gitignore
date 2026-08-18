@@ -42,3 +42,4 @@ artifacts/
 # same. The directory must EXIST before submit (`mkdir -p logs`), but nothing
 # inside it is source.
 logs/
+.spark-tmp/

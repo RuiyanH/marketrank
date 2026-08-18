@@ -50,7 +50,15 @@ RECENT_K = 10
 def _recent_events(
     spark: SparkSession, as_of: str, lookback_days: int, max_basket: int
 ) -> DataFrame:
-    """Distinct (customer, article, day_index) strictly before `as_of`, capped."""
+    """
+    Distinct (customer, article, day_index) strictly before `as_of`, capped.
+
+    The cap is on distinct (article, day) EVENTS, not distinct articles: an
+    article bought on three days consumes three slots. That is the intended
+    behaviour -- repeat purchases are signal here -- but it means `max_basket`
+    bounds events rather than basket width, and the two differ for exactly the
+    heavy customers the cap exists to bound.
+    """
     txn = spark.table(ingest.TRANSACTIONS_TABLE).filter(
         (F.col("t_dat") < F.lit(as_of).cast("date"))
         & (F.col("t_dat") >= F.date_sub(F.lit(as_of).cast("date"), lookback_days))
@@ -134,6 +142,7 @@ def covisit_source(
     n: int = 40,
     recent_k: int = RECENT_K,
     lookback_days: int = LOOKBACK_DAYS,
+    max_basket: int = MAX_BASKET,
     pairs: DataFrame | None = None,
     **kwargs,
 ) -> DataFrame:
@@ -150,10 +159,14 @@ def covisit_source(
 
     if pairs is None:
         pairs = covisit_pairs(
-            spark, as_of, lookback_days=lookback_days, **kwargs
+            spark, as_of, lookback_days=lookback_days, max_basket=max_basket, **kwargs
         )
 
-    ev = _recent_events(spark, as_of, lookback_days, MAX_BASKET)
+    # Use the CALLER's cap, not the module constant. The seeds are then filtered
+    # to `recent_k`, so with recent_k <= min(caps) the two are identical and this
+    # was benign -- but it silently ignored the argument, and becomes a real bug
+    # the moment recent_k > max_basket.
+    ev = _recent_events(spark, as_of, lookback_days, max_basket)
     if customers is not None:
         ev = ev.join(customers.select("customer_id").distinct(), "customer_id", "inner")
 

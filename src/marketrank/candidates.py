@@ -243,10 +243,14 @@ def marginal_contribution(
             .agg(F.avg("k").alias("m")).collect()[0].m
         )
 
+    def reach(df: DataFrame) -> int:
+        return df.select("customer_id").distinct().count()
+
     names = tuple(sources)
     all_union = union_candidates(*sources.values(), source_names=names)
     full = recall_ceiling(all_union, truth, source_names=names)
     per_customer = mean_k(all_union)
+    cohort_n = reach(all_union)
 
     out = {
         "budget_note": budget_note,
@@ -271,9 +275,21 @@ def marginal_contribution(
             loo, loo_k = 0.0, 0.0
         marginal = full["recall_ceiling"] - loo
         slots = per_customer - loo_k
+        # REACH is not decoration. `solo` is a ceiling over the WHOLE cohort,
+        # while the slot average below covers only the customers a source
+        # actually reaches -- different denominators, so dividing one by the
+        # other compares sources unfairly. Co-visitation is the case that
+        # exposes it: ~46% reach at a 30-day lookback, so its slot efficiency
+        # partly reflects spending slots only where it has signal. R.6's rule
+        # reads `marginal_per_slot`, whose terms are both cohort-wide, which is
+        # why the decision is unaffected -- but the trap belongs named, not
+        # sitting unlabelled in the artifact.
+        n_reached = reach(sources[name])
         out["sources"][name] = {
             "solo": solo["recall_ceiling"],
-            "solo_slots": mean_k(sources[name]),
+            "reach_customers": n_reached,
+            "reach_frac": (n_reached / cohort_n) if cohort_n else float("nan"),
+            "solo_slots_per_covered_customer": mean_k(sources[name]),
             "leave_one_out": loo,
             "marginal": marginal,
             "marginal_slots": slots,
