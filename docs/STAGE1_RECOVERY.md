@@ -192,6 +192,41 @@ ceiling. Target: **comfortably above 12%** before week 5 restarts —
 2.5–3× the ranker's room to work versus today's 7.5%. **VERIFY** that
 co-visitation delivers at H&M scale; its solo coverage is the number to find out.
 
+### RESULT (2026-08-18) — 7.475% → **11.930%**, gate not cleared
+
+Co-visitation delivers: it is the largest single contributor at 4.805% solo and
+the second-most efficient source at 0.0779%/slot. The **VERIFY** above is
+answered yes.
+
+| config | covisit reach | covisit solo | union ceiling |
+|---|---|---|---|
+| committed 30/20, depth 20/40 | 45.9% | 2.803% | 10.777% |
+| depth probe 40/60 (R.5c) | 45.9% | 3.501% | 11.176% |
+| misha 60/50 (R.5d) | 66.7% | 4.470% | 11.761% |
+| misha 90/50 (R.5d) | **74.4%** | **4.805%** | **11.930%** |
+
+Detail and reasoning in `BUILD_NOTES.md` R.5c/R.5d. Three things this changes:
+
+1. **The target is missed by 0.070 points**, and the lever that got here is
+   nearly spent — per *added* slot, the last step returned 0.0469%, below `ann`
+   and level with `global_pop`. A 120/50 run projects to ~12.0%: touching the
+   gate, not comfortably above it, at the worst efficiency yet measured.
+2. **These are deterministic measurements.** R.1b's noise floor applies to
+   two-tower training, not to a fixed-cohort ceiling with no sampling. No seed
+   replication is owed here.
+3. **The binding constraint has moved.** R.5 was written to de-risk the schedule
+   "whether or not the tower recovers". It has: +1.153 points over the committed
+   configuration. The largest remaining headroom is `ann` — 4.156% solo from the
+   tower that lost to popularity, with its repair specified in R.3 and R.4 and
+   not yet run. Continuing to squeeze covisit is worse value than fixing the
+   source with a known defect.
+
+**Recommendation carried into R.6:** treat 11.930% as R.5's final number, do not
+spend further runs on covisit bounds, and re-measure the ceiling once R.3/R.4
+have produced a new ANN parquet. `max_basket`'s independent contribution is
+confounded inside the 60/50 step and remains unmeasured; a 60/20 run would
+separate it, and is not on the critical path.
+
 ## Step R.6 — The decision gate
 
 **Think first.** The original checkpoint — "the tower beats the baseline union
