@@ -59,7 +59,7 @@ cd ~/Developer/marketrank && git add -A && git commit -m "Environment-aware path
 ## Phase 1 — On MISHA: clone and build the environment
 
 ```bash
-cd ~ && git clone https://github.com/RuiyanH/marketrank.git && cd ~/marketrank && python3 -m venv .venv && .venv/bin/pip install --upgrade pip && .venv/bin/pip install -e . && .venv/bin/pip install pyspark==3.5.9 kaggle && .venv/bin/pip install --no-cache-dir numpy
+cd ~ && git clone https://github.com/RuiyanH/marketrank.git && cd ~/marketrank && python3 -m venv .venv && .venv/bin/pip install --upgrade pip && .venv/bin/pip install -e . && .venv/bin/pip install pyspark==3.5.9 kaggle && .venv/bin/pip install --no-cache-dir numpy pyarrow
 ```
 
 **CHECKPOINT 1:**
@@ -76,12 +76,25 @@ Expect `3.11.13 3.5.9`.
 module load miniconda/24.3.0 && conda create -y -p ~/marketrank/.venv python=3.11 && ~/marketrank/.venv/bin/pip install -e ~/marketrank && ~/marketrank/.venv/bin/pip install pyspark==3.5.9 kaggle
 ```
 
-**Why `numpy` explicitly.** It lives in the `dev` extra, and this install is `-e .`
-(no extra) by design — misha needs no dbt or pytest. But `numpy` is not a dev
-tool, it is a runtime import of `retrieval/model.py`, `dataset.py` and
-`train_towers.py`. Phases 1–5 are pure Spark and never touch it, so the gap
-stays invisible until the first GPU job dies 22 seconds in with
-`Failed to initialize NumPy` (measured, 2026-08-18).
+**Why `numpy` and `pyarrow` explicitly.** Both live in the `dev` extra, and this
+install is `-e .` (no extra) by design — misha needs no dbt or pytest. But
+neither is a dev tool: they are runtime imports of `retrieval/model.py`,
+`dataset.py` and `train_towers.py`. Phases 1–5 are pure Spark and never touch
+them, so the gap stays invisible until the first GPU job dies — which it did
+twice, 22 s in on `Failed to initialize NumPy` and again on
+`No module named 'pyarrow'`, each costing a queue wait (measured 2026-08-18/19).
+
+The second one was missed because `pyarrow` is imported **inside a function**
+(`model._read_parquet`), so a scan of top-level imports does not see it. The
+complete third-party set on the training/ANN path, by AST walk rather than grep:
+`numpy`, `pyarrow`, `pyspark`, `torch`, `hnswlib`.
+
+**`hnswlib` is deliberately NOT installed.** It is function-local in
+`retrieval/index.py`, and `ann_candidates.py` uses exact inner-product search
+(step 3.3: exact 0.147 ms/query batched vs HNSW 0.0323 ms at 98.6% index recall
+— the index buys tail latency in a serving path and nothing in an offline
+export). It also needs a C++ build. If you ever call the HNSW path here, install
+it then and expect the compile to be the interesting part.
 
 **Torch is NOT installed by Phase 1** and must not be, because a plain
 `pip install torch` can resolve to a CPU-only wheel. Install it before R.4,
