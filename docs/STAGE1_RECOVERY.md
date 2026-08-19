@@ -142,6 +142,42 @@ bites. Uniform negatives price the tail. The ablation table (with/without, per
 **Checkpoint.** Same cohort, same cutoffs, one row per configuration. Keep the
 best; record all.
 
+### RESULT (2026-08-18) — null, and R.4 carries 16 anyway
+
+| n_uniform | r@100 | Δ vs 0 |
+|---|---|---|
+| 0 (`r2_recency`) | 6.659% | — |
+| **16** | **6.710%** | **+0.051** |
+| 64 | 6.451% | −0.208 |
+| 256 | 6.608% | −0.051 |
+
+**Noise floor (R.1b, 3 seeds, one config): spread 0.051.** The best rung clears
+baseline by exactly that, and the response is not monotone. `r@500` — the
+sharper test, since pricing the tail should surface at deep k first — agrees:
++0.191, −0.048, +0.013 across a 16× range. Mixed negatives do not help this
+model on this dataset.
+
+**"Keep the best; record all" is applied literally**: R.4 carries
+`n_uniform=16`. It is the nominal best, directionally positive everywhere, and
+free at GPU scale, and the tail-inflation mechanism has more room on the full
+catalog than on this cohort. **Its delta is inside the noise floor, and R.4's
+writeup must say so** — any R.4 gain belongs to scale until measured otherwise.
+A second full-scale run to ablate it is explicitly not worth its cost.
+
+**The logQ specification above was right.** This build raised a pre-registered
+objection that a mixed proposal needs `log(p·freq(a) + (1−p)/N)` rather than
+each component's own probability, and blocked recording the null until it was
+tested. That objection is **retracted**: the implementation appends uniform
+columns rather than merging the pools, so each column is an independent draw
+corrected with its own distribution — precisely what this section specified.
+The mixture form applies to a design where one column could come from either
+pool. Detail in `BUILD_NOTES.md` R.3.
+
+**Provenance note.** `train_towers.py` wrote no sha, so all three R.3 rungs
+record nothing about the code that produced them and cannot be bound to it
+retroactively. Fixed forward — metrics now carry `code.sha` and `code.dirty` —
+but the three rungs stay unbound, recorded rather than repaired.
+
 ## Step R.4 — Scale, last and honestly
 
 **Why now (last).** Because the plateau and the overfitting result say scale is
