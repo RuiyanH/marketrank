@@ -59,7 +59,7 @@ cd ~/Developer/marketrank && git add -A && git commit -m "Environment-aware path
 ## Phase 1 — On MISHA: clone and build the environment
 
 ```bash
-cd ~ && git clone https://github.com/RuiyanH/marketrank.git && cd ~/marketrank && python3 -m venv .venv && .venv/bin/pip install --upgrade pip && .venv/bin/pip install -e . && .venv/bin/pip install pyspark==3.5.9 kaggle
+cd ~ && git clone https://github.com/RuiyanH/marketrank.git && cd ~/marketrank && python3 -m venv .venv && .venv/bin/pip install --upgrade pip && .venv/bin/pip install -e . && .venv/bin/pip install pyspark==3.5.9 kaggle && .venv/bin/pip install --no-cache-dir numpy
 ```
 
 **CHECKPOINT 1:**
@@ -74,6 +74,22 @@ Expect `3.11.13 3.5.9`.
 
 ```bash
 module load miniconda/24.3.0 && conda create -y -p ~/marketrank/.venv python=3.11 && ~/marketrank/.venv/bin/pip install -e ~/marketrank && ~/marketrank/.venv/bin/pip install pyspark==3.5.9 kaggle
+```
+
+**Why `numpy` explicitly.** It lives in the `dev` extra, and this install is `-e .`
+(no extra) by design — misha needs no dbt or pytest. But `numpy` is not a dev
+tool, it is a runtime import of `retrieval/model.py`, `dataset.py` and
+`train_towers.py`. Phases 1–5 are pure Spark and never touch it, so the gap
+stays invisible until the first GPU job dies 22 seconds in with
+`Failed to initialize NumPy` (measured, 2026-08-18).
+
+**Torch is NOT installed by Phase 1** and must not be, because a plain
+`pip install torch` can resolve to a CPU-only wheel. Install it before R.4,
+matching the cluster's CUDA (12.0–12.8 available), and do not let a later
+`pip install -e ".[dev]"` overwrite it with the CPU build:
+
+```bash
+cd ~/marketrank && source env.misha.sh && pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cu124
 ```
 
 The `.venv` path is deliberate — `config.py` derives `PYSPARK_PYTHON` from

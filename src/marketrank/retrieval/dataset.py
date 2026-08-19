@@ -285,7 +285,7 @@ def export(
     spark: SparkSession,
     out_dir: Path = DATASET_DIR,
     customer_sample: int | None = 100_000,
-    train_start: str = "2020-02-14",
+    train_start: str | None = "2020-02-14",
     train_end: str | None = None,
     eval_customer_sample: int = 20_000,
     article_volume: bool = False,
@@ -300,6 +300,13 @@ def export(
     bit-comparable with the reference build.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
+    # Symmetric with train_end below. "auto"/None means the train SLICE's own
+    # bound, so the full-scale window is never a date typed into a job script
+    # that can drift away from splits.py. The literal default stays
+    # 2020-02-14 -- the laptop ladder's reduced window -- so re-exporting an
+    # earlier rung reproduces it rather than silently widening it.
+    if train_start in (None, "auto"):
+        train_start = splits.bounds("train")[0]
     train_end = train_end or splits.bounds("train")[1]
 
     vocabs = build_vocabs(spark)
@@ -383,11 +390,21 @@ if __name__ == "__main__":
     _out = DATASET_DIR
     if "--out" in sys.argv:
         _out = Path(sys.argv[sys.argv.index("--out") + 1])
+    # TRAINING WINDOW. Hardcoded at the laptop's 2020-02-14 and unreachable from
+    # the CLI, which made "full scale" undeliverable: `dataset 0` lifted the
+    # COHORT cap only, so R.4's export ran 1.37M customers over six months and
+    # produced 7,117,442 rows where the rung needs ~28M. Both caps have to lift.
+    # `--train-start auto` takes the train slice's own lower bound.
+    _start = "2020-02-14"
+    if "--train-start" in sys.argv:
+        _start = sys.argv[sys.argv.index("--train-start") + 1]
     _spark = get_spark("twotower_export", driver_memory="10g")
     _t = time.time()
-    _stats = export(_spark, out_dir=_out, customer_sample=_n, article_volume=_vol)
+    _stats = export(_spark, out_dir=_out, customer_sample=_n,
+                    train_start=_start, article_volume=_vol)
     print("EXPORT out_dir", _out)
     print("EXPORT article_volume", _vol)
+    print("EXPORT train_start", _start)
     print("EXPORT_SECONDS %.1f" % (time.time() - _t))
     for k, v in _stats.items():
         print("EXPORT", k, v)

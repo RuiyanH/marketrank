@@ -53,7 +53,7 @@ python -m marketrank.jobs.rebuild_features
 # produced .limit(0) -- an EMPTY training set, exported without complaint.
 # If n_train_rows comes back small, that is the bug to suspect first.
 echo ">>> stage 2: export (full cohort, article volume)"
-python -m marketrank.retrieval.dataset 0 --article-volume
+python -m marketrank.retrieval.dataset 0 --article-volume --train-start auto
 
 echo "finished    : $(date -Is)"
 
@@ -61,8 +61,13 @@ echo "finished    : $(date -Is)"
 # CHECKPOINT -- read these off the log before submitting the GPU job.
 #
 #   EXPORT n_articles          expect 105,542
+#   EXPORT train_start         expect the train slice's start, NOT 2020-02-14
 #   EXPORT n_train_rows        expect ~10x the laptop's 2,900,248 -- this is the
-#                              number that proves the cohort cap actually lifted
+#                              number that proves BOTH caps actually lifted.
+#                              MEASURED 2026-08-18: with the cohort cap lifted
+#                              but the window still at 2020-02-14 this returned
+#                              7,117,442 -- 2.5x, not 10x. A number that looks
+#                              like scale and is not.
 #   EXPORT n_eval_customers    expect 20,000
 #   EXPORT n_eval_truth_pairs  expect 70,715 EXACTLY
 #
