@@ -36,7 +36,21 @@ dbt/dbt_packages/
 
 # Regenerable model/export artifacts (marketrank.retrieval.dataset, trained
 # checkpoints). Rebuild with `make twotower-data` / `make twotower-train`.
-artifacts/
+#
+# EXCEPT the provenance sidecars. `ceiling.json` and `*.meta.json` are a few KB
+# each and are NOT regenerable in the sense the parquet is: they record which
+# args, cohort and inputs produced a number. The measurements they describe were
+# computed on misha, under $HOME/scratch, which is PURGED AFTER 60 DAYS -- so
+# without this the only audit trail for the 11.930% ceiling has a deletion date.
+#
+# Written as `artifacts/**` rather than `artifacts/`, deliberately: git does not
+# descend into an excluded DIRECTORY, so `!artifacts/**/ceiling.json` under a
+# bare `artifacts/` rule silently matches nothing. Excluding the contents and
+# re-including the directories is what makes the negations reachable.
+artifacts/**
+!artifacts/**/
+!artifacts/**/ceiling.json
+!artifacts/**/*.meta.json
 
 # Job logs. sbatch writes logs/%x-%j.out here and the local runner does the
 # same. The directory must EXIST before submit (`mkdir -p logs`), but nothing

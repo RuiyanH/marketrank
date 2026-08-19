@@ -1,0 +1,11 @@
+{
+  "source": "covisit",
+  "as_of": "2020-08-12",
+  "rows": 871251,
+  "args": {
+    "n_covisit": 60,
+    "covisit_lookback": 90,
+    "covisit_max_basket": 50,
+    "covisit_top_k": 40
+  }
+}

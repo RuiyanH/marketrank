@@ -1,0 +1,114 @@
+{
+  "run": {
+    "as_of": "2020-08-12",
+    "slice": "val_tune",
+    "sources": [
+      "repurchase",
+      "category_pop",
+      "global_pop",
+      "covisit",
+      "ann"
+    ],
+    "loaded_from": null,
+    "derived": true,
+    "derivation_args_used": true,
+    "args": {
+      "ann": "artifacts/twotower/runs/r2_recency/ann_candidates.parquet",
+      "slice": "val_tune",
+      "n_repurchase": 30,
+      "n_category": 40,
+      "n_global_pop": 40,
+      "n_covisit": 60,
+      "covisit_lookback": 60,
+      "covisit_max_basket": 50,
+      "covisit_top_k": 40,
+      "no_category": false,
+      "sources_from": null,
+      "drop": [],
+      "driver_memory": "48g",
+      "out": "artifacts/candidates_misha_60_50",
+      "expect_pairs": 70715
+    },
+    "source_provenance": null
+  },
+  "stats": {
+    "n_customers": 20000,
+    "n_candidate_rows": 3116071,
+    "mean_candidates_per_customer": 155.80355,
+    "min_candidates": 65,
+    "max_candidates": 218,
+    "mean_sources_per_candidate": 1.1987557408030818,
+    "rows_from_repurchase": 418242,
+    "rows_from_category_pop": 742573,
+    "rows_from_global_pop": 800000,
+    "rows_from_covisit": 774593,
+    "rows_from_ann": 1000000
+  },
+  "ceiling": {
+    "n_true_pairs": 70715,
+    "recall_ceiling": 0.11761295340451107,
+    "by_repurchase": 0.029159301421197766,
+    "by_category_pop": 0.021622003818143252,
+    "by_global_pop": 0.03167644771264937,
+    "by_covisit": 0.04470055858021636,
+    "by_ann": 0.041561196351552004
+  },
+  "marginal": {
+    "budget_note": "155.8 cand/customer",
+    "union_ceiling": 0.11761295340451107,
+    "n_true_pairs": 70715,
+    "mean_candidates_per_customer": 155.80355,
+    "sources": {
+      "repurchase": {
+        "solo": 0.029159301421197766,
+        "reach_customers": 18576,
+        "reach_frac": 0.9288,
+        "solo_slots_per_covered_customer": 22.51518087855297,
+        "leave_one_out": 0.10106766598317189,
+        "marginal": 0.016545287421339178,
+        "marginal_slots": 18.774200000000008,
+        "marginal_per_slot": 0.0008812778931373465
+      },
+      "category_pop": {
+        "solo": 0.021622003818143252,
+        "reach_customers": 18576,
+        "reach_frac": 0.9288,
+        "solo_slots_per_covered_customer": 39.97486003445306,
+        "leave_one_out": 0.10639892526338118,
+        "marginal": 0.011214028141129886,
+        "marginal_slots": 30.6909,
+        "marginal_per_slot": 0.00036538609624122743
+      },
+      "global_pop": {
+        "solo": 0.03167644771264937,
+        "reach_customers": 20000,
+        "reach_frac": 1.0,
+        "solo_slots_per_covered_customer": 40.0,
+        "leave_one_out": 0.10794032383511278,
+        "marginal": 0.009672629569398294,
+        "marginal_slots": 20.109800000000007,
+        "marginal_per_slot": 0.0004809908387650942
+      },
+      "covisit": {
+        "solo": 0.04470055858021636,
+        "reach_customers": 13335,
+        "reach_frac": 0.66675,
+        "solo_slots_per_covered_customer": 58.08721409823772,
+        "leave_one_out": 0.09268189210209998,
+        "marginal": 0.024931061302411087,
+        "marginal_slots": 30.518550000000005,
+        "marginal_per_slot": 0.0008169150009555199
+      },
+      "ann": {
+        "solo": 0.041561196351552004,
+        "reach_customers": 20000,
+        "reach_frac": 1.0,
+        "solo_slots_per_covered_customer": 50.0,
+        "leave_one_out": 0.10167574064908436,
+        "marginal": 0.015937212755426713,
+        "marginal_slots": 28.811300000000003,
+        "marginal_per_slot": 0.0005531584050503348
+      }
+    }
+  }
+}

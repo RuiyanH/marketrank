@@ -1,0 +1,10 @@
+{
+  "source": "category_pop",
+  "as_of": "2020-08-12",
+  "rows": 742573,
+  "args": {
+    "n_category": 40
+  },
+  "backfilled": true,
+  "backfill_note": "Reconstructed 2026-08-18 from the recorded invocation; these parquets were materialised before write_source_meta existed. Sidecars emitted by a run are not flagged."
+}

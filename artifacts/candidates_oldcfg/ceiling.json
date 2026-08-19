@@ -1,0 +1,87 @@
+{
+  "run": {
+    "as_of": "2020-08-12",
+    "slice": "val_tune",
+    "sources": [
+      "repurchase",
+      "category_pop",
+      "ann"
+    ],
+    "loaded_from": "artifacts/candidates/sources",
+    "derived": false,
+    "args": {
+      "ann": null,
+      "slice": "val_tune",
+      "n_repurchase": 30,
+      "n_category": 40,
+      "n_global_pop": 40,
+      "n_covisit": 40,
+      "covisit_lookback": 60,
+      "covisit_max_basket": 50,
+      "no_category": false,
+      "sources_from": "artifacts/candidates/sources",
+      "drop": [
+        "global_pop",
+        "covisit"
+      ],
+      "out": "artifacts/candidates_oldcfg",
+      "expect_pairs": 70715
+    }
+  },
+  "stats": {
+    "n_customers": 20000,
+    "n_candidate_rows": 2076433,
+    "mean_candidates_per_customer": 103.82165,
+    "min_candidates": 50,
+    "max_candidates": 120,
+    "mean_sources_per_candidate": 1.0406379594236848,
+    "rows_from_repurchase": 418242,
+    "rows_from_category_pop": 742573,
+    "rows_from_ann": 1000000
+  },
+  "ceiling": {
+    "n_true_pairs": 70715,
+    "recall_ceiling": 0.08148200523227038,
+    "by_repurchase": 0.029159301421197766,
+    "by_category_pop": 0.021622003818143252,
+    "by_ann": 0.041561196351552004
+  },
+  "marginal": {
+    "budget_note": "103.8 cand/customer",
+    "union_ceiling": 0.08148200523227038,
+    "n_true_pairs": 70715,
+    "mean_candidates_per_customer": 103.82165,
+    "sources": {
+      "repurchase": {
+        "solo": 0.029159301421197766,
+        "reach_customers": 18576,
+        "reach_frac": 0.9288,
+        "solo_slots_per_covered_customer": 22.51518087855297,
+        "leave_one_out": 0.05823375521459379,
+        "marginal": 0.023248250017676587,
+        "marginal_slots": 19.93010000000001,
+        "marginal_per_slot": 0.0011664893812713723
+      },
+      "category_pop": {
+        "solo": 0.021622003818143252,
+        "reach_customers": 18576,
+        "reach_frac": 0.9288,
+        "solo_slots_per_covered_customer": 39.97486003445306,
+        "leave_one_out": 0.06681750689386975,
+        "marginal": 0.014664498338400625,
+        "marginal_slots": 33.55735,
+        "marginal_per_slot": 0.000436998104391456
+      },
+      "ann": {
+        "solo": 0.041561196351552004,
+        "reach_customers": 20000,
+        "reach_frac": 1.0,
+        "solo_slots_per_covered_customer": 50.0,
+        "leave_one_out": 0.04782577953758043,
+        "marginal": 0.03365622569468995,
+        "marginal_slots": 41.82466464254953,
+        "marginal_per_slot": 0.0008046980407931455
+      }
+    }
+  }
+}

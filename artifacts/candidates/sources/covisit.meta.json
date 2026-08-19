@@ -1,0 +1,12 @@
+{
+  "source": "covisit",
+  "as_of": "2020-08-12",
+  "rows": 332721,
+  "args": {
+    "n_covisit": 40,
+    "covisit_lookback": 30,
+    "covisit_max_basket": 20
+  },
+  "backfilled": true,
+  "backfill_note": "Reconstructed 2026-08-18 from the recorded invocation; these parquets were materialised before write_source_meta existed. Sidecars emitted by a run are not flagged."
+}

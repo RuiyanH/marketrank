@@ -1,0 +1,8 @@
+{
+  "source": "repurchase",
+  "as_of": "2020-08-12",
+  "rows": 418242,
+  "args": {
+    "n_repurchase": 30
+  }
+}

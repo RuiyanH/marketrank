@@ -1,0 +1,167 @@
+{
+  "run": {
+    "as_of": "2020-08-12",
+    "slice": "val_tune",
+    "sources": [
+      "repurchase",
+      "category_pop",
+      "global_pop",
+      "covisit",
+      "ann"
+    ],
+    "loaded_from": "artifacts/candidates/sources",
+    "derived": false,
+    "derivation_args_used": false,
+    "args": {
+      "slice": "val_tune",
+      "sources_from": "artifacts/candidates/sources",
+      "drop": [],
+      "out": "artifacts/candidates",
+      "expect_pairs": 70715
+    },
+    "source_provenance": {
+      "repurchase": {
+        "source": "repurchase",
+        "as_of": "2020-08-12",
+        "rows": 418242,
+        "args": {
+          "n_repurchase": 30
+        },
+        "backfilled": true,
+        "backfill_note": "Reconstructed 2026-08-18 from the recorded invocation; these parquets were materialised before write_source_meta existed. Sidecars emitted by a run are not flagged."
+      },
+      "category_pop": {
+        "source": "category_pop",
+        "as_of": "2020-08-12",
+        "rows": 742573,
+        "args": {
+          "n_category": 40
+        },
+        "backfilled": true,
+        "backfill_note": "Reconstructed 2026-08-18 from the recorded invocation; these parquets were materialised before write_source_meta existed. Sidecars emitted by a run are not flagged."
+      },
+      "global_pop": {
+        "source": "global_pop",
+        "as_of": "2020-08-12",
+        "rows": 800000,
+        "args": {
+          "n_global_pop": 40
+        },
+        "backfilled": true,
+        "backfill_note": "Reconstructed 2026-08-18 from the recorded invocation; these parquets were materialised before write_source_meta existed. Sidecars emitted by a run are not flagged."
+      },
+      "covisit": {
+        "source": "covisit",
+        "as_of": "2020-08-12",
+        "rows": 332721,
+        "args": {
+          "n_covisit": 40,
+          "covisit_lookback": 30,
+          "covisit_max_basket": 20
+        },
+        "backfilled": true,
+        "backfill_note": "Reconstructed 2026-08-18 from the recorded invocation; these parquets were materialised before write_source_meta existed. Sidecars emitted by a run are not flagged."
+      },
+      "ann": {
+        "source": "ann",
+        "as_of": "2020-08-12",
+        "rows": 1000000,
+        "args": {
+          "ann": "artifacts/twotower/runs/r2_recency/ann_candidates.parquet"
+        },
+        "backfilled": true,
+        "backfill_note": "Reconstructed 2026-08-18 from the recorded invocation; these parquets were materialised before write_source_meta existed. Sidecars emitted by a run are not flagged."
+      }
+    },
+    "derivation_args_ignored": {
+      "ann": null,
+      "n_repurchase": 30,
+      "n_category": 40,
+      "n_global_pop": 40,
+      "n_covisit": 40,
+      "covisit_lookback": 60,
+      "covisit_max_basket": 50,
+      "no_category": false
+    }
+  },
+  "stats": {
+    "n_customers": 20000,
+    "n_candidate_rows": 2762256,
+    "mean_candidates_per_customer": 138.1128,
+    "min_candidates": 65,
+    "max_candidates": 198,
+    "mean_sources_per_candidate": 1.1923355402250915,
+    "rows_from_repurchase": 418242,
+    "rows_from_category_pop": 742573,
+    "rows_from_global_pop": 800000,
+    "rows_from_covisit": 332721,
+    "rows_from_ann": 1000000
+  },
+  "ceiling": {
+    "n_true_pairs": 70715,
+    "recall_ceiling": 0.1077706285795093,
+    "by_repurchase": 0.029159301421197766,
+    "by_category_pop": 0.021622003818143252,
+    "by_global_pop": 0.03167644771264937,
+    "by_covisit": 0.028027999717174575,
+    "by_ann": 0.041561196351552004
+  },
+  "marginal": {
+    "budget_note": "138.1 cand/customer",
+    "union_ceiling": 0.1077706285795093,
+    "n_true_pairs": 70715,
+    "mean_candidates_per_customer": 138.1128,
+    "sources": {
+      "repurchase": {
+        "solo": 0.029159301421197766,
+        "reach_customers": 18576,
+        "reach_frac": 0.9288,
+        "solo_slots_per_covered_customer": 22.51518087855297,
+        "leave_one_out": 0.09012232199674751,
+        "marginal": 0.017648306582761786,
+        "marginal_slots": 19.259349999999998,
+        "marginal_per_slot": 0.0009163500628402198
+      },
+      "category_pop": {
+        "solo": 0.021622003818143252,
+        "reach_customers": 18576,
+        "reach_frac": 0.9288,
+        "solo_slots_per_covered_customer": 39.97486003445306,
+        "leave_one_out": 0.09577883051686346,
+        "marginal": 0.011991798062645831,
+        "marginal_slots": 31.408249999999995,
+        "marginal_per_slot": 0.0003818040821327464
+      },
+      "global_pop": {
+        "solo": 0.03167644771264937,
+        "reach_customers": 20000,
+        "reach_frac": 1.0,
+        "solo_slots_per_covered_customer": 40.0,
+        "leave_one_out": 0.09730608781729477,
+        "marginal": 0.010464540762214522,
+        "marginal_slots": 20.798399999999987,
+        "marginal_per_slot": 0.0005031416244621956
+      },
+      "covisit": {
+        "solo": 0.028027999717174575,
+        "reach_customers": 9179,
+        "reach_frac": 0.45895,
+        "solo_slots_per_covered_customer": 36.248066238152305,
+        "leave_one_out": 0.09268189210209998,
+        "marginal": 0.015088736477409312,
+        "marginal_slots": 12.827799999999996,
+        "marginal_per_slot": 0.0011762528631105347
+      },
+      "ann": {
+        "solo": 0.041561196351552004,
+        "reach_customers": 20000,
+        "reach_frac": 1.0,
+        "solo_slots_per_covered_customer": 50.0,
+        "leave_one_out": 0.09063140776355795,
+        "marginal": 0.017139220815951345,
+        "marginal_slots": 29.88969999999999,
+        "marginal_per_slot": 0.0005734156186228483
+      }
+    }
+  }
+}
