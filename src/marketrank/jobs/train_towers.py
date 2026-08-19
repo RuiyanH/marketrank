@@ -111,6 +111,7 @@ def main(argv=None) -> dict:
         )
 
     t0 = time.time()
+    train_stats: dict = {}
     model, history, arts = M.train(
         args.data,
         epochs=args.epochs,
@@ -123,6 +124,7 @@ def main(argv=None) -> dict:
         eval_each_epoch=(ev, truth),
         checkpoint_path=out / "model.pt",
         n_uniform=args.n_uniform,
+        stats_out=train_stats,
         recency_half_life=args.recency_half_life,
         article_volume=args.article_volume,
     )
@@ -143,6 +145,9 @@ def main(argv=None) -> dict:
         "n_eval_customers": len(ev["customer_id"]),
         "n_true_pairs": n_pairs,
         "train_seconds": seconds,
+        # `recency`: weight percentiles and Kish ESS. A scale rung must be
+        # able to show how much of n actually reached the gradient.
+        **train_stats,
         "history": history,
         "best": best,
     }

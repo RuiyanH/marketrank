@@ -368,6 +368,10 @@ def train(
     select_metric: str = "recall_at_100",
     n_uniform: int = 0,
     recency_half_life: float = 0.0,
+    # Filled in by train() with things the caller must be able to record but
+    # that do not belong in `history`. Out-param rather than a changed return
+    # type, so existing callers keep working.
+    stats_out: dict | None = None,
     article_volume: bool = False,
 ):
     """
@@ -439,13 +443,44 @@ def train(
         w = np.power(0.5, age_days / float(recency_half_life)).astype(np.float32)
         w = w / w.mean()
         sample_w = torch.tensor(w, device=device)
+        # EFFECTIVE SAMPLE SIZE (Kish): (sum w)^2 / sum(w^2). With w normalised
+        # to mean 1 this is n / mean(w^2), and it is the number that decides
+        # whether a wider training window actually added data. It can collapse
+        # far below n without anything failing: at half_life=30 a row 700 days
+        # old carries 2^-23, so widening the window to 23 months appends rows
+        # that are numerically absent from the gradient. Reported so a scale
+        # rung cannot claim n rows of evidence while training on a fraction.
+        _p = np.percentile(w, [5, 50, 95, 99]).tolist()
+        _ess = float(len(w) / np.mean(w.astype(np.float64) ** 2))
+        recency_stats = {
+            "half_life_days": float(recency_half_life),
+            "n_rows": int(len(w)),
+            "weight_p05": _p[0], "weight_p50": _p[1],
+            "weight_p95": _p[2], "weight_p99": _p[3],
+            "max_age_days": int(age_days.max()),
+            "effective_sample_size": _ess,
+            "ess_fraction": _ess / len(w),
+        }
         if verbose:
             print(
                 "RECENCY half_life=%.1f  weight p05/p50/p95 = %.4f / %.4f / %.4f"
-                % (recency_half_life, *np.percentile(w, [5, 50, 95]))
+                % (recency_half_life, *_p[:3])
+            )
+            print(
+                "RECENCY n_rows %d  ESS %.0f  (%.1f%% of rows)"
+                % (len(w), _ess, 100.0 * _ess / len(w))
             )
     else:
         sample_w = None
+        recency_stats = {
+            "half_life_days": 0.0,
+            "n_rows": int(len(tr["article"])),
+            # Unweighted: every row counts once, so ESS is n by definition.
+            "effective_sample_size": float(len(tr["article"])),
+            "ess_fraction": 1.0,
+        }
+    if stats_out is not None:
+        stats_out["recency"] = recency_stats
 
     # logQ correction. sampling_prob(a) is the article's empirical frequency
     # among the positives, which is exactly its probability of turning up as an
