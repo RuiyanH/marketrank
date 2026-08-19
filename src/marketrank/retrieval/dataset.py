@@ -400,11 +400,16 @@ if __name__ == "__main__":
         _start = sys.argv[sys.argv.index("--train-start") + 1]
     _spark = get_spark("twotower_export", driver_memory="10g")
     _t = time.time()
+    from marketrank import splits as _sp
+    # Resolve "auto" HERE so the log records the DATE, not the word. Printing
+    # `auto` makes the export non-self-describing: a reader cannot tell which
+    # window produced n_train_rows without re-deriving splits.py at that commit.
+    _start_resolved = _sp.bounds("train")[0] if _start in (None, "auto") else _start
     _stats = export(_spark, out_dir=_out, customer_sample=_n,
-                    train_start=_start, article_volume=_vol)
+                    train_start=_start_resolved, article_volume=_vol)
     print("EXPORT out_dir", _out)
     print("EXPORT article_volume", _vol)
-    print("EXPORT train_start", _start)
+    print("EXPORT train_start", _start_resolved, "(requested:", _start, ")")
     print("EXPORT_SECONDS %.1f" % (time.time() - _t))
     for k, v in _stats.items():
         print("EXPORT", k, v)
