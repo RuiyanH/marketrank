@@ -1,0 +1,8 @@
+{
+  "source": "global_pop",
+  "as_of": "2020-08-12",
+  "rows": 800000,
+  "args": {
+    "n_global_pop": 40
+  }
+}

@@ -51,6 +51,10 @@ artifacts/**
 !artifacts/**/
 !artifacts/**/ceiling.json
 !artifacts/**/*.meta.json
+# Training metrics too: they carry the recency/ESS block, the per-epoch history
+# and the code sha. R.4's headline numbers -- ess_fraction 0.138, best at epoch
+# 3 of 12 -- exist nowhere else. A few KB each.
+!artifacts/**/metrics.json
 
 # Job logs. sbatch writes logs/%x-%j.out here and the local runner does the
 # same. The directory must EXIST before submit (`mkdir -p logs`), but nothing

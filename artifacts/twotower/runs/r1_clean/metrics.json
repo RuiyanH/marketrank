@@ -1,0 +1,106 @@
+{
+  "label": "r1_clean",
+  "args": {
+    "label": "r1_clean",
+    "data": "/Users/test/Developer/marketrank-build/artifacts/twotower",
+    "out": null,
+    "epochs": 8,
+    "dim": 64,
+    "batch_size": 1024,
+    "lr": 0.003,
+    "temperature": 0.07,
+    "seed": 0,
+    "no_logq": false,
+    "n_uniform": 0,
+    "recency_half_life": 0.0,
+    "article_volume": false,
+    "threads": 0,
+    "expect_pairs": 70715
+  },
+  "n_eval_customers": 20000,
+  "n_true_pairs": 70715,
+  "train_seconds": 793.1919560432434,
+  "history": [
+    {
+      "epoch": 0,
+      "loss": 7.02084957795628,
+      "seconds": 91.27885007858276,
+      "n_true_pairs": 70715,
+      "recall_at_12": 0.010620094746517712,
+      "recall_at_100": 0.04952273209361521,
+      "recall_at_500": 0.13876829526974474
+    },
+    {
+      "epoch": 1,
+      "loss": 6.793102377888847,
+      "seconds": 87.41430187225342,
+      "n_true_pairs": 70715,
+      "recall_at_12": 0.011242310683730468,
+      "recall_at_100": 0.05233684508237291,
+      "recall_at_500": 0.14504701972707346
+    },
+    {
+      "epoch": 2,
+      "loss": 6.734390531724456,
+      "seconds": 78.18119597434998,
+      "n_true_pairs": 70715,
+      "recall_at_12": 0.011595842466237715,
+      "recall_at_100": 0.055122675528530014,
+      "recall_at_500": 0.15083079968889204
+    },
+    {
+      "epoch": 3,
+      "loss": 6.695102015962709,
+      "seconds": 77.17185878753662,
+      "n_true_pairs": 70715,
+      "recall_at_12": 0.012147352046949021,
+      "recall_at_100": 0.056819628084564804,
+      "recall_at_500": 0.15378632539065262
+    },
+    {
+      "epoch": 4,
+      "loss": 6.664372486920007,
+      "seconds": 82.07674670219421,
+      "n_true_pairs": 70715,
+      "recall_at_12": 0.01228876475995192,
+      "recall_at_100": 0.05707417096797002,
+      "recall_at_500": 0.15445096514176623
+    },
+    {
+      "epoch": 5,
+      "loss": 6.638424720972945,
+      "seconds": 76.53299903869629,
+      "n_true_pairs": 70715,
+      "recall_at_12": 0.012500883829456268,
+      "recall_at_100": 0.05785194088948596,
+      "recall_at_500": 0.1560772113412996
+    },
+    {
+      "epoch": 6,
+      "loss": 6.615976291187739,
+      "seconds": 88.82092118263245,
+      "n_true_pairs": 70715,
+      "recall_at_12": 0.012515025100756558,
+      "recall_at_100": 0.056961040797567704,
+      "recall_at_500": 0.1554974192179877
+    },
+    {
+      "epoch": 7,
+      "loss": 6.595679493273719,
+      "seconds": 103.8610372543335,
+      "n_true_pairs": 70715,
+      "recall_at_12": 0.01221805840345047,
+      "recall_at_100": 0.057031747154069154,
+      "recall_at_500": 0.1539277381036555
+    }
+  ],
+  "best": {
+    "epoch": 5,
+    "loss": 6.638424720972945,
+    "seconds": 76.53299903869629,
+    "n_true_pairs": 70715,
+    "recall_at_12": 0.012500883829456268,
+    "recall_at_100": 0.05785194088948596,
+    "recall_at_500": 0.1560772113412996
+  }
+}

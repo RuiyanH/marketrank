@@ -84,11 +84,19 @@ def _git_provenance() -> dict:
             return None
 
     sha = _run("git", "rev-parse", "HEAD")
-    status = _run("git", "status", "--porcelain")
+    # `--untracked-files=no`: `dirty` must mean "tracked code differs from this
+    # sha", not "output files exist". Plain --porcelain counts untracked files,
+    # so once artifacts became trackable (see .gitignore) every run on a machine
+    # that had produced any output reported dirty=True -- as r4_scale_gpu did,
+    # with clean code. A flag that is always true is worse than no flag.
+    status = _run("git", "status", "--porcelain", "--untracked-files=no")
+    untracked = _run("git", "ls-files", "--others", "--exclude-standard")
     return {
         "sha": sha,
         # None means the git call failed, which is NOT the same as clean.
         "dirty": None if status is None else bool(status),
+        # Reported separately because it does not invalidate the sha.
+        "untracked_files": None if untracked is None else len(untracked.splitlines()),
     }
 
 

@@ -1,0 +1,8 @@
+{
+  "source": "ann",
+  "as_of": "2020-08-12",
+  "rows": 1000000,
+  "args": {
+    "ann": "artifacts/twotower/runs/r4_scale_gpu/ann_candidates.parquet"
+  }
+}

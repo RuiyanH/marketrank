@@ -1,0 +1,58 @@
+{
+  "label": "zz_ess_smoketest",
+  "code": {
+    "sha": "b500faba1f832a487e494aa5160f09f907fcdd72",
+    "dirty": false
+  },
+  "args": {
+    "label": "zz_ess_smoketest",
+    "data": "artifacts/twotower_r2",
+    "out": null,
+    "epochs": 1,
+    "dim": 64,
+    "batch_size": 1024,
+    "lr": 0.003,
+    "temperature": 0.07,
+    "seed": 0,
+    "no_logq": false,
+    "n_uniform": 16,
+    "recency_half_life": 30.0,
+    "article_volume": false,
+    "threads": 0,
+    "expect_pairs": 70715
+  },
+  "n_eval_customers": 20000,
+  "n_true_pairs": 70715,
+  "train_seconds": 107.69891905784607,
+  "recency": {
+    "half_life_days": 30.0,
+    "n_rows": 2900248,
+    "weight_p05": 0.0803428664803505,
+    "weight_p50": 0.6577662825584412,
+    "weight_p95": 3.1652371883392334,
+    "weight_p99": 3.8078596591949463,
+    "max_age_days": 179,
+    "effective_sample_size": 1492816.0098956926,
+    "ess_fraction": 0.514720123898264
+  },
+  "history": [
+    {
+      "epoch": 0,
+      "loss": 6.985154008629632,
+      "seconds": 91.51800489425659,
+      "n_true_pairs": 70715,
+      "recall_at_12": 0.012472601286855688,
+      "recall_at_100": 0.058855971151806546,
+      "recall_at_500": 0.1662589266775083
+    }
+  ],
+  "best": {
+    "epoch": 0,
+    "loss": 6.985154008629632,
+    "seconds": 91.51800489425659,
+    "n_true_pairs": 70715,
+    "recall_at_12": 0.012472601286855688,
+    "recall_at_100": 0.058855971151806546,
+    "recall_at_500": 0.1662589266775083
+  }
+}
