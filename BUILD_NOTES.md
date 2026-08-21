@@ -2372,3 +2372,78 @@ fact — the mixed-negatives code was uncommitted while they ran, and is now
 with `dirty` distinguished from a failed git call, so R.4's expensive runs are
 auditable from birth. The three R.3 rungs stay unbound; that is recorded rather
 than repaired, because a rerun would bind them to code that is not what ran.
+
+---
+
+## Step R.4 — Scale, measured: the tower does not earn its cost
+
+Full-scale two-tower on misha. `n_uniform=16` and `recency_half_life=30` carried
+from the ladder so this rung measures scale and nothing else.
+
+### The row count was not the data increase
+
+| | laptop | R.4 | ratio |
+|---|---|---|---|
+| training rows | 2,900,248 | 27,155,032 | 9.4× |
+| max age (days) | 179 | ~700 | |
+| **effective sample size** (Kish) | 1,492,816 | **3,748,071** | **2.51×** |
+| ess fraction | 0.515 | **0.138** | |
+
+Widening the window to 23 months while holding a 30-day half-life appends rows
+that are numerically absent from the gradient: at 700 days the weight is 2^-23.
+The median row's weight fell 227× (0.6578 → 0.0029) and p05 is 0.0000.
+
+**This was predicted before the run, from the laptop's own ESS.** For decay over
+a window of length T with half-life h and roughly uniform event density,
+ESS/n ≈ 2h/(T·ln2), which gives 0.484 against the laptop's measured 0.515.
+Applied to T≈700 it predicted 0.12; measured 0.138. The excess is the direction
+expected — transaction volume grows over the period, so recent days are
+over-represented. Recording the prediction because a post-hoc explanation of
+13.8% would have been unfalsifiable.
+
+### The retrieval result
+
+| | laptop (`r3_uniform16`) | R.4 (`r4_scale_gpu`) | Δ |
+|---|---|---|---|
+| best recall@100 | 6.710% | **6.748%** | **+0.038** |
+
+**Noise floor 0.051. The gain is inside it.** The precise claim is NOT "scale
+does not help retrieval" — it is that a **2.51×** effective increase, at 2× dim
+and 4× batch, did not move recall@100 beyond seed noise. The 9.4× was absorbed
+by the half-life, and that is now measured rather than assumed.
+
+### Unplanned finding: 12 epochs is ~3× too many
+
+Recall peaks at **epoch 3** (6.748%) and falls monotonically to 6.260% by epoch
+11 — a loss of 0.488, nearly ten noise spreads — while training loss improves
+every single epoch (6.973 → 6.768). Loss/recall anti-correlation for the third
+time in this build, after R.2's article-volume leak and R.3's wider-denominator
+artefact. Checkpoint selection saved the number; 9 of 12 epochs were spent
+making retrieval worse. Wall clock 42 s/epoch, 558 s total on an L40S.
+
+### The ceiling: better solo, worse at the margin
+
+Re-measured against the four held sources at covisit 90/50, only `ann` changed.
+Held sources reproduce their solo values exactly (2.916 / 2.162 / 3.168 / 4.805).
+
+| | r2_recency ann | r4_scale_gpu ann | Δ |
+|---|---|---|---|
+| ann solo | 4.156% | **4.214%** | +0.058 |
+| ann marginal | 1.578% | **1.486%** | **−0.092** |
+| sources per candidate | 1.2017 | 1.2114 | +0.0097 |
+| union rows | 3,188,745 | 3,163,372 | −25,373 |
+| **UNION CEILING** | **11.930%** | **11.838%** | **−0.092** |
+
+**Solo rose and marginal fell, and `sources_per_candidate` says why.** The
+full-scale tower retrieves more true pairs by itself, but a larger share of them
+are already covered by covisit and popularity. Overlap rose, unique candidates
+fell, the budget shrank. Scale taught it more of what the heuristics already
+knew — which is the opposite of what a candidate source is for.
+
+**Do not read −0.092 as "the GPU tower is worse."** It is downstream of a
+training run whose own recall@100 moved +0.038 against a 0.051 floor, so
+training noise propagates into the ann parquet. The two towers are
+indistinguishable at the ceiling. What IS supported: the full-scale tower does
+not earn its cost. 2.51× effective data, 2× dim, 4× batch and a GPU allocation
+buy nothing measurable at the metric stage 1 is hired for, and **the best
+ceiling in this build belongs to the laptop-trained `r2_recency`**.
