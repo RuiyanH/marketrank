@@ -136,6 +136,31 @@ each executor spills to its own `/tmp`, which is correct; no other node reads it
 Contrast with `WAREHOUSE`, which **must** stay on GPFS: all executors write partitions of the same
 Iceberg table and must see one shared filesystem.
 
+### 3b-bis. The pattern behind 3a/3b: nothing bulk may derive from `PROJECT_ROOT`
+
+`config.py` derives every default path from `PROJECT_ROOT`, and on misha `PROJECT_ROOT` is the repo
+under `$HOME` — **the smallest filesystem on the machine** (125 GiB quota, ~19 GiB free) and the
+only one that is backed up. That default is right on a laptop and wrong here for anything large.
+
+Sort each path by *what it is*, not by habit:
+
+| path | goes | why |
+|---|---|---|
+| `DATA_RAW` | scratch | 3.5 GB, re-downloadable from Kaggle |
+| `WAREHOUSE` | scratch (GPFS) | shared across executors; must be one filesystem |
+| `TABLES` | scratch | **~55.7 GB** at the shipped candidate budget — see Rider 1 |
+| `SPARK_TMP` | node-local `/tmp` | small-file churn; per-node by design |
+| `REPORTS`, `artifacts/` | `$HOME` (default) | KB–MB: models, metrics, plots, sidecars |
+| the repo itself | `$HOME` | it is source, and `$HOME` is the backed-up fileset |
+
+**Two of these were learned the expensive way.** The 27M-row two-tower export landed in `$HOME`
+because `DATASET_DIR` derives from `PROJECT_ROOT` (`EXPORT out_dir …/marketrank/artifacts/twotower`
+in job 2303121). And a write to the **project** fileset was killed by quota on 2026-08-18 — `df`
+cannot show you that, because it reports the 3.7 PiB filesystem rather than your quota.
+
+The test for a new path: *could this ever exceed ~10 GB?* If yes it needs its own
+`MARKETRANK_*` variable and a scratch target in `env.misha.sh`, not a `PROJECT_ROOT` default.
+
 ### 3c. `.gitignore` — add the local-mode spill dir
 
 Append under the Spark section:
@@ -150,6 +175,7 @@ Append under the Spark section:
 module load Java/17.0.4
 export MARKETRANK_DATA_RAW="$HOME/scratch/marketrank/data/raw"
 export MARKETRANK_WAREHOUSE="$HOME/scratch/marketrank/warehouse"
+export MARKETRANK_TABLES="$HOME/scratch/marketrank/tables"
 export MARKETRANK_SPARK_TMP="${TMPDIR:-/tmp}/marketrank-spark"
 export SPARK_CONF_DIR="$HOME/marketrank/conf"
 source "$HOME/marketrank/.venv/bin/activate"

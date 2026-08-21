@@ -8,6 +8,7 @@
 module load Java/17.0.4
 export MARKETRANK_DATA_RAW="$HOME/scratch/marketrank/data/raw"
 export MARKETRANK_WAREHOUSE="$HOME/scratch/marketrank/warehouse"
+export MARKETRANK_TABLES="$HOME/scratch/marketrank/tables"
 export MARKETRANK_SPARK_TMP="${TMPDIR:-/tmp}/marketrank-spark"
 export SPARK_CONF_DIR="$HOME/marketrank/conf"
 source "$HOME/marketrank/.venv/bin/activate"
