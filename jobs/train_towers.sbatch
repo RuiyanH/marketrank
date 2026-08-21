@@ -56,6 +56,13 @@ export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-64}"
 # rung measures scale and nothing else.
 # ---------------------------------------------------------------------------
 DIM=128
+# NO EARLY STOPPING here either -- fixed count, `best` chosen from history
+# afterwards. Left at 12 rather than following the GPU sibling down to 5,
+# deliberately: that curve was measured at FULL scale, where the peak was epoch
+# 3, while this script's reduced-scale ladder peaked at epochs 4-7 (r2_recency
+# 4, r3_uniform16 4, r3_uniform64 7). Cutting to 5 on the strength of a
+# different scale's curve would risk truncating before the peak. If you measure
+# this one, lower it and cite the run.
 EPOCHS=12
 BATCH=1024
 LR=3e-3
@@ -68,6 +75,14 @@ echo "=== marketrank two-tower ============================================"
 echo "job              : ${SLURM_JOB_ID:-interactive} on $(hostname)"
 echo "cores / mem      : ${SLURM_CPUS_PER_TASK:-?} / ${SLURM_MEM_PER_NODE:-?} MB"
 echo "git commit       : $(git rev-parse --short HEAD)"
+# Tracked-file status, so the sha above is self-adjudicating: `none` means
+# this log reproduces from that commit, anything else names what differed.
+# --untracked-files=no deliberately -- output under artifacts/ is not code
+# drift, and counting it made metrics report dirty=True on every run
+# (r4_scale_gpu did, from artifact files alone). `|| true` because
+# `set -e` would otherwise abort the header on a git hiccup.
+_tracked="$(git status --porcelain --untracked-files=no | tr '\n' ';' | sed 's/;$//' || true)"
+echo "tracked mods     : ${_tracked:-none}"
 echo "dim / epochs     : ${DIM} / ${EPOCHS}"
 echo "n_uniform        : ${N_UNIFORM}"
 echo "recency half-life: ${RECENCY_HALF_LIFE}"

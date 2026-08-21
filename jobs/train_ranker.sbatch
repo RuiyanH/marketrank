@@ -44,6 +44,14 @@ echo "=== marketrank ranker ==============================================="
 echo "job            : ${SLURM_JOB_ID:-interactive} on $(hostname)"
 echo "cores / mem    : ${SLURM_CPUS_PER_TASK:-?} / ${SLURM_MEM_PER_NODE:-?} MB"
 echo "git commit     : $(git rev-parse --short HEAD)"
+# Tracked-file status, so the sha above is self-adjudicating: `none` means
+# this log reproduces from that commit, anything else names what differed.
+# --untracked-files=no deliberately -- output under artifacts/ is not code
+# drift, and counting it made metrics report dirty=True on every run
+# (r4_scale_gpu did, from artifact files alone). `|| true` because
+# `set -e` would otherwise abort the header on a git hiccup.
+_tracked="$(git status --porcelain --untracked-files=no | tr '\n' ';' | sed 's/;$//' || true)"
+echo "tracked mods   : ${_tracked:-none}"
 echo "neg sample rate: ${NEG_SAMPLE_RATE}"
 echo "started        : $(date -Is)"
 echo "====================================================================="

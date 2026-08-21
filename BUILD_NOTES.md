@@ -2370,7 +2370,7 @@ nothing about the code that produced them and cannot be bound to it after the
 fact — the mixed-negatives code was uncommitted while they ran, and is now
 `c70d448`. Fixed forward: metrics carry `code.sha` and `code.dirty` from here on,
 with `dirty` distinguished from a failed git call, so R.4's expensive runs are
-auditable from birth. The three R.3 rungs stay unbound; that is recorded rather
+auditable from birth. **That flag then shipped broken — see R.4.** The three R.3 rungs stay unbound; that is recorded rather
 than repaired, because a rerun would bind them to code that is not what ran.
 
 ---
@@ -2391,7 +2391,10 @@ from the ladder so this rung measures scale and nothing else.
 
 Widening the window to 23 months while holding a 30-day half-life appends rows
 that are numerically absent from the gradient: at 700 days the weight is 2^-23.
-The median row's weight fell 227× (0.6578 → 0.0029) and p05 is 0.0000.
+The median row's weight fell **231×** (0.657766 → 0.002850) and p05 is
+3.6e-06; `max_age_days` is 691. (Stated as 227× on first writing, from
+dividing the rounded display values 0.6578/0.0029 rather than the stored
+ones — the printed percentiles are 4dp and the ratio is not.)
 
 **This was predicted before the run, from the laptop's own ESS.** For decay over
 a window of length T with half-life h and roughly uniform event density,
@@ -2421,6 +2424,16 @@ time in this build, after R.2's article-volume leak and R.3's wider-denominator
 artefact. Checkpoint selection saved the number; 9 of 12 epochs were spent
 making retrieval worse. Wall clock 42 s/epoch, 558 s total on an L40S.
 
+**There is no early stopping, and there never was.** `train()` runs a fixed
+epoch count and `best` is selected from the history afterwards — so the reported
+number is correct, and the cost is purely wall clock. But anyone rerunning this
+inherits ~9 epochs that make retrieval worse and change no result, which is the
+kind of thing that is obvious once and invisible forever after.
+`train_towers_gpu.sbatch` now defaults to **`EPOCHS=5`**, citing this curve. The
+CPU sibling stays at 12 deliberately: its reduced-scale ladder peaked at epochs
+4–7 (`r2_recency` 4, `r3_uniform16` 4, `r3_uniform64` 7), and cutting it on the
+strength of a full-scale curve could truncate before its own peak.
+
 ### The ceiling: better solo, worse at the margin
 
 Re-measured against the four held sources at covisit 90/50, only `ann` changed.
@@ -2447,3 +2460,24 @@ indistinguishable at the ceiling. What IS supported: the full-scale tower does
 not earn its cost. 2.51× effective data, 2× dim, 4× batch and a GPU allocation
 buy nothing measurable at the metric stage 1 is hired for, and **the best
 ceiling in this build belongs to the laptop-trained `r2_recency`**.
+
+
+### `code.dirty` shipped broken, and how strongly to say so
+
+`r4_scale_gpu` recorded `dirty: True`. `_git_provenance` used
+`git status --porcelain`, which counts **untracked** files, and `83291b6` had
+just made artifacts trackable — so any machine that had produced output reported
+dirty. Fixed in `08f5151`: `--untracked-files=no`, with untracked counted
+separately because it does not invalidate the sha.
+
+**`08f5151`'s commit message says that run had "clean code". The artifact does
+not establish that.** What is established is that the flag's *input* was wrong.
+So `dirty: True` is **diagnosed as a false positive**, not demonstrated to be
+one — the tree state at launch was never recorded, which is precisely the gap
+the flag existed to close, and a flag written after the fact by buggy code
+cannot close it retrospectively.
+
+Fixed at the source rather than argued: every job header now echoes
+`git status --porcelain --untracked-files=no` at launch (`none`, or the files
+that differed). The sha in the log is then self-adjudicating from the log
+itself, independent of anything the metrics writer believes.

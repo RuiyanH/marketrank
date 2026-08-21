@@ -264,6 +264,7 @@ def main(argv=None) -> dict:
     # derivations into 1. It also leaves the sources on disk to inspect, which
     # is how R.6's decision gets audited rather than trusted.
     # ------------------------------------------------------------------------
+    derived_meta: dict = {}
     src_dir = args.out / "sources"
     src_dir.mkdir(parents=True, exist_ok=True)
     for name in names:
@@ -272,9 +273,15 @@ def main(argv=None) -> dict:
         sources[name] = spark.read.parquet(str(path))
         n_rows = sources[name].count()
         write_source_meta(path, name, args, as_of, n_rows)
+        # Read the sidecar back rather than reusing the dict we just wrote. Two
+        # reasons: it round-trips the file that an auditor will actually open,
+        # so a broken writer surfaces here instead of in the artifact; and it
+        # makes `run.source_provenance` populated on BOTH paths, so the field
+        # means the same thing regardless of how the run got its sources.
+        derived_meta[name] = read_source_meta(path)
         print(f"MATERIALISED {name:<14} rows {n_rows:>9} -> {path}")
 
-    return _measure(spark, args, sources, truth)
+    return _measure(spark, args, sources, truth, source_meta=derived_meta)
 
 
 def _measure(
@@ -321,9 +328,12 @@ def _measure(
             all_args if derived
             else {k: v for k, v in all_args.items() if k not in DERIVATION_ARGS}
         ),
-        "source_provenance": (
-            {n: (source_meta or {}).get(n) for n in names} if not derived else None
-        ),
+        # Populated on both paths as of R.4 hygiene. It used to be None when
+        # derived, which meant an auditor had to know WHICH path a run took
+        # before knowing which field to read -- and the derive path is the one
+        # that actually created the sidecars. `derived` below still records the
+        # distinction that matters (whether `args` describes the derivation).
+        "source_provenance": {n: (source_meta or {}).get(n) for n in names},
     }
     if not derived:
         run["derivation_args_ignored"] = {

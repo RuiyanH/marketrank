@@ -72,7 +72,21 @@ export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 # change and stops being a rung.
 # ---------------------------------------------------------------------------
 DIM=128
-EPOCHS=12
+# THERE IS NO EARLY STOPPING. `train()` runs a fixed epoch count and `best` is
+# selected from the history afterwards, so epochs past the peak cost wall clock
+# and change nothing -- they do not stop, and they do not corrupt the reported
+# number either.
+#
+# MEASURED (R.4, r4_scale_gpu, 2026-08-19): recall@100 peaks at **epoch 3**
+# (6.748%) and falls monotonically to 6.260% by epoch 11 -- a drop of 0.488,
+# nearly ten noise spreads -- while training loss improves every single epoch
+# (6.973 -> 6.768). That run spent 9 of its 12 epochs making retrieval worse.
+#
+# 5 leaves margin over the observed peak. Raise it only with a curve that says
+# so, and read the curve rather than the loss: this build has now been misled by
+# loss/recall anti-correlation three times (R.2's volume leak, R.3's wider
+# denominator, R.4's over-training).
+EPOCHS=5
 BATCH=4096            # larger than the laptop's 1024: in-batch negatives scale
                       # with batch size, so a bigger batch is a better sampled
                       # softmax as well as better GPU utilisation. It also
@@ -103,6 +117,14 @@ echo "gpu              : ${SLURM_JOB_GPUS:-${SLURM_STEP_GPUS:-unset}}"
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader || true
 echo "cores / mem      : ${SLURM_CPUS_PER_TASK:-?} / ${SLURM_MEM_PER_NODE:-?} MB"
 echo "git commit       : $(git rev-parse --short HEAD)"
+# Tracked-file status, so the sha above is self-adjudicating: `none` means
+# this log reproduces from that commit, anything else names what differed.
+# --untracked-files=no deliberately -- output under artifacts/ is not code
+# drift, and counting it made metrics report dirty=True on every run
+# (r4_scale_gpu did, from artifact files alone). `|| true` because
+# `set -e` would otherwise abort the header on a git hiccup.
+_tracked="$(git status --porcelain --untracked-files=no | tr '\n' ';' | sed 's/;$//' || true)"
+echo "tracked mods     : ${_tracked:-none}"
 echo "dim / epochs     : ${DIM} / ${EPOCHS}   batch ${BATCH}"
 echo "n_uniform        : ${N_UNIFORM}"
 echo "recency half-life: ${RECENCY_HALF_LIFE}"
