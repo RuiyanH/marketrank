@@ -154,10 +154,20 @@ at all.
 
 ### Candidate-generation sizing
 
-27,155,032 train-slice positives × 100 candidates × 37 columns ≈ **950 GB
-uncompressed, ~110 GB at parquet+zstd** — inside the spec's 40–160 GB estimate,
-and the reason that job is the one genuinely cluster-shaped step. This build ran
-2,091,944 rows of it (0.077%) on a laptop.
+Candidates are generated once per **(customer, day)**, not once per positive —
+a three-article basket is one scoring event with one candidate set. Measured on
+the `train` slice: 27,155,032 positives across **8,584,379 scoring events**, a
+mean basket of 3.16.
+
+8,584,379 events × 159.4 candidates × 37 columns ≈ **479 GB uncompressed, ~55.7
+GB at parquet+zstd** — inside the spec's 40–160 GB estimate, and the reason that
+job is the one genuinely cluster-shaped step. This build ran 2,091,944 rows of
+it on a laptop.
+
+An earlier version of this section said ~110 GB, from `positives × candidates`.
+That over-counts by the basket size; the same error would have made the shipped
+159.4-candidate budget look like ~175 GB and out of envelope, when it is 55.7 GB
+and inside it.
 
 ## Stage 1: is the two-tower worth keeping?
 
@@ -171,28 +181,40 @@ question. Stage 1 is not a single retriever, it is a **union of candidate
 sources**, and a source earns its place by what the union loses without it, per
 candidate slot it occupies — not by whether it beats the whole union alone.
 
-Measured on that basis, at a fixed budget of 138 candidates per customer:
+Measured on that basis, at the shipped budget of 159.4 candidates per customer:
 
 | source | solo ceiling | reach | marginal | slots | **marginal/slot** |
 |---|---|---|---|---|---|
-| co-visitation | 2.80% | 45.9% | 1.51% | 12.8 | **0.1176%** |
-| repurchase | 2.92% | 92.9% | 1.76% | 19.3 | 0.0916% |
-| **two-tower (ANN)** | **4.16%** | 100.0% | 1.71% | 29.9 | **0.0573%** |
-| global popularity | 3.17% | 100.0% | 1.05% | 20.8 | 0.0503% |
-| category popularity | 2.16% | 92.9% | 1.20% | 31.4 | 0.0382% |
-| **union** | **10.78%** | | 138.1 | |
+| repurchase | 2.92% | 92.9% | 1.63% | 18.6 | **0.0876%** |
+| co-visitation | 4.81% | 74.4% | 2.66% | 34.2 | 0.0779% |
+| **two-tower (ANN)** | **4.16%** | 100.0% | 1.58% | 28.5 | **0.0554%** |
+| global popularity | 3.17% | 100.0% | 0.96% | 20.0 | 0.0479% |
+| category popularity | 2.16% | 92.9% | 1.11% | 30.5 | 0.0362% |
+| **union** | **11.93%** | | 159.4 | |
 
-The tower has the **highest solo coverage of any single source** and clears the
-weakest heuristic on marginal-per-slot, so it stays. The decision rule was fixed
-*before* these numbers existed, which is what stops it being a rationalisation,
-and it survives both obvious challenges: drop category popularity and the bar
-becomes global popularity's 0.0525% against the tower's 0.0594% — still a keep;
-propagate the measured run-to-run noise (0.051 recall points, sd 0.026) through
-29.9 slots and it is ±0.003 against a margin of 0.019, roughly 7x smaller.
+The tower clears the weakest heuristic on marginal-per-slot — 0.0554% against
+0.0362% — so it stays. The rule was fixed *before* any of these numbers existed,
+which is what stops it being a rationalisation, and the tower has now cleared it
+in **three consecutive tables** built on different candidate configurations
+(0.0573/0.0382, then 0.0554/0.0362, then 0.0546/0.0363 with a full-scale tower).
 
-**Provisional.** Two planned experiments — mixed negative sampling and a
-full-scale training run — have not been done, and both can only move the tower
-up.
+**Final, not provisional.** Both planned experiments ran, and the earlier claim
+here — that they "can only move the tower up" — was wrong:
+
+* **Mixed negative sampling** is a **null**. `n_uniform` ∈ {16, 64, 256} against
+  0: the best rung beat baseline by 0.051 recall points, which is *exactly* the
+  measured seed-noise spread, with no monotone response.
+* **Full-scale training** moved recall@100 by **+0.038**, also inside the noise
+  floor — and it made the *ceiling slightly worse* (11.93% → 11.84%), because a
+  larger share of what the bigger tower retrieves is already covered by
+  co-visitation and popularity. A source can improve in isolation and get worse
+  at the margin; this one did.
+
+**What ships is the laptop-trained tower** (`r2_recency`, d=64, 2.9M positives),
+not the GPU one. Note the consequence: `n_uniform=16` — R.3's nominal best — is
+**not in the shipped path**, because the tower that ships was trained with
+`n_uniform=0`. The full-scale run cost a GPU allocation and bought nothing
+measurable at the metric stage 1 is hired for.
 
 ### What actually fixed retrieval, and what did not
 
@@ -219,12 +241,22 @@ than watching the objective.
 
 ### Known limits of this result
 
-- The candidate ceiling is **10.78%**, below the 12% this stage was targeting, so
-  stage 2 is not yet unblocked. Removing the least efficient source was measured
-  and made it *worse* (9.58%); the remaining route is co-visitation at a 60-day
-  lookback rather than the 30-day one that fits a laptop.
-- Co-visitation reaches only **46%** of customers at that reduced lookback, so
-  its leading per-slot efficiency partly reflects spending slots only where it
-  has signal.
-- Everything above is reduced scale: 300,000 of 1.37M customers, 2.9M of ~28M
-  training positives, d=64.
+- The candidate ceiling is **11.93%**, against the 12% this stage targeted —
+  **missed by 0.070 points**, and shipped anyway. The measured case for not
+  buying it back: the last increment of co-visitation lookback returned
+  0.0469% per added slot, the worst of any spend in the build, and extending it
+  again projects to *touch* 12% rather than clear it. Removing the least
+  efficient source was measured and made things worse (9.58%).
+- **Co-visitation reaches 74.4% of customers**, so a quarter of the cohort gets
+  nothing from the strongest per-slot source. Reach, not depth, is what raised
+  this ceiling: 45.9% → 66.7% → 74.4% as the lookback widened, and each step
+  bought less than the last.
+- The candidate budget is **159.4 per customer**, ~1.6× the ~100 that the
+  sizing above was designed around. That was accepted with the cost stated
+  (~55.7 GB compressed), not waved through. A depth trim on the weakest source
+  was considered and **not taken — because storage is not scarce here (0.5% of
+  the available quota), not because a trim was measured cheap.** It was never
+  priced.
+- The tower is reduced scale by choice, not by limitation: 300,000 of 1.37M
+  customers, 2.9M of ~28M positives, d=64. The full-scale alternative was
+  trained and measured, and is not the one that ships.

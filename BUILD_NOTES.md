@@ -2572,3 +2572,96 @@ envelope's ceiling and 200× against the quota. **Rider 2 is not taken.** Trimmi
 candidate depth to solve a problem that does not exist would cost measured
 ceiling (`category_pop` carries a 1.112% marginal) to buy storage that is free.
 The real fix is the output path.
+
+---
+
+## Step R.6 — The decision, and what the recovery week actually established
+
+### The rule, applied
+
+Pre-registered in `STAGE1_RECOVERY.md` before R.1–R.4 had numbers: **keep the
+tower as a source if its marginal-ceiling-per-slot ≥ the weakest heuristic
+source's.**
+
+At the shipped configuration: **`ann` 0.0554% ≥ `category_pop` 0.0362%. KEEP.**
+
+It clears in all three tables built during the recovery, on different candidate
+configurations — 0.0573/0.0382 at budget 138.1, 0.0554/0.0362 at 159.4, and
+0.0546/0.0363 with the full-scale tower. A rule that only passed on the table
+that happened to be measured last would be worth much less.
+
+### The ladder, R.0 → R.4
+
+| step | change | recall@100 | vs floor (0.051) |
+|---|---|---|---|
+| — | week-3 headline (dirty features) | 5.531% | — |
+| R.1 | feature-spine repair | 5.785% | +0.254, 5× |
+| R.1b | **noise floor**, 3 seeds identical config | 5.761–5.812 | spread **0.051**, sd 0.025 |
+| R.2 | recency-weighted positives (h=30) | **6.659%** | **+0.873, 17×** |
+| R.2 | article-volume features | 5.324% | −0.462, **a leak** |
+| R.2 | recency + volume | 4.944% | −1.715 |
+| R.3 | mixed negatives, `n_uniform=16` | 6.710% | +0.051, **= floor** |
+| R.3 | `n_uniform=64` / `256` | 6.451 / 6.608% | −0.208 / −0.051 |
+| R.4 | full scale, d=128, batch 4096 | 6.748% | +0.038, **inside floor** |
+
+And the ceiling, which is the number stage 1 is actually judged on:
+
+| configuration | ceiling | budget |
+|---|---|---|
+| three sources, pre-recovery | 7.475% | ~98 |
+| + `global_pop`, `covisit` (R.5) | 10.777% | 138.1 |
+| + covisit depth `top_k` 40 / `n` 60 (R.5c) | 11.176% | 145.7 |
+| + covisit reach 60/50 (R.5d) | 11.761% | 155.8 |
+| **+ covisit reach 90/50 (R.5d) — SHIPPED** | **11.930%** | **159.4** |
+| + full-scale tower (R.4) | 11.838% | 158.2 |
+
+**+4.455 points, +59.6% relative**, and the best number belongs to the
+laptop-trained tower.
+
+### The shipping configuration
+
+```
+repurchase     n=30
+category_pop   n=40
+global_pop     n=40
+covisit        lookback 90, max_basket 50, top_k 40, n 60
+ann            r2_recency, top-50   <- LAPTOP-TRAINED, d=64, 2.9M positives
+                                       n_uniform=0, recency_half_life=30,
+                                       NO article_volume
+ceiling 11.930% at 159.4 candidates/customer
+```
+
+**`n_uniform=16` is not in the shipped path.** R.3 selected it under "keep the
+best; record all" and R.4 carried it, but R.4's tower is not what ships — so
+R.3's choice ships nowhere. Worth stating plainly, because the ablation ladder
+reads as if it accumulates and here it does not.
+
+### The gate: missed by 0.070, and shipped anyway
+
+11.930% against a target of "comfortably above 12%". The case for not buying it
+back is measured, not rhetorical:
+
+* The last covisit increment returned **0.0469% per added slot** — the worst
+  spend in the build, below `ann` (0.0554%) and level with `global_pop`.
+* Extrapolating the reach series (+20.8, +7.7 → ~+3 points) puts 120/50 at
+  ~12.0%: **touching** the gate, not clearing it comfortably, at the worst
+  efficiency yet measured.
+* A bigger tower is forbidden by R.6's own "not permitted" clause — and R.4 is
+  the evidence that clause was right.
+
+### Budget, and the trim that was not priced
+
+159.4 candidates/customer is accepted with its cost stated: **~55.7 GB
+compressed / ~479 GB uncompressed** for the week-5 training set (Rider 1), which
+is inside the spec's 40–160 GB envelope and 0.51% of the scratch quota.
+
+A depth trim on `category_pop` — the weakest source, `source_rank <= 20` — was
+specified as a fallback and **not taken**. Be precise about why: it was **gated
+out because storage is not scarce**, not measured and found cheap. **No number
+exists for it.** If week 5 ever becomes storage- or wall-clock-bound, that
+measurement is still owed.
+
+### Week 5 is unblocked
+
+The ceiling the ranker lives under is 11.930%. The binding constraint on stage 1
+is no longer the candidate set — it is the ranker, which does not exist yet.
