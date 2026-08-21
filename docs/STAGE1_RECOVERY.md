@@ -354,10 +354,27 @@ Five sources; covisit `lookback 90, max_basket 50, top_k 40, n 60`; `ann` from
 `r2_recency` at top-50; depths 30/40/40. Ceiling **11.930%** at **159.4
 candidates/customer**.
 
-**Carry that slot count into week 5 as a cost, not a footnote.** It is ~1.6×
-week 4's ~100 design point, and candidate count multiplies the ranker's training
-join — the ~110 GB zstd estimate assumed ~100. The ceiling was bought with
-slots, and week 5 pays for them again.
+**The tower that ships is laptop-trained** — `r2_recency`, d=64, 2.9M positives,
+`n_uniform=0`, `recency_half_life=30`, no `article_volume`. A direct consequence
+worth stating because the ladder reads as if it accumulates: **R.3's
+`n_uniform=16` is not in the shipped path.** R.3 selected it under "keep the
+best; record all" and R.4 carried it, but R.4's tower is not what ships, so
+R.3's choice ships nowhere.
+
+**The slot count is a cost, and it has now been priced** (Rider 1, `4c4fddb`).
+159.4 is ~1.6× week 4's ~100 design point, and candidate count multiplies the
+ranker's training join: **~55.7 GB compressed / ~479 GB uncompressed**, inside
+the spec's 40–160 GB envelope and 0.51% of the scratch quota. **Accepted.**
+
+That supersedes the ~110 GB figure this section previously cited. §4.2 sized the
+table as `positives × N`, but candidates are generated once per (customer, day)
+— measured mean basket **3.1633** — so the old figure was high by that factor at
+*any* candidate depth.
+
+**A depth trim on `category_pop` was specified as the fallback and not taken.**
+Precisely: it was **gated out because storage is not scarce**, not measured and
+found cheap. No number exists for it. If week 5 becomes storage- or
+wall-clock-bound, that measurement is still owed.
 
 ### What R.4 bought
 
