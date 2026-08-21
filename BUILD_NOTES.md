@@ -2481,3 +2481,94 @@ Fixed at the source rather than argued: every job header now echoes
 `git status --porcelain --untracked-files=no` at launch (`none`, or the files
 that differed). The sha in the log is then self-adjudicating from the log
 itself, independent of anything the metrics writer believes.
+
+---
+
+## Rider 1 — Does the week-5 training set fit at 159.4 candidates/customer?
+
+R.6 ships a candidate set of **159.4 candidates/customer**, against the ~100 that
+step 4.2's sizing assumed. Rescaling 4.2's headline (~110 GB) by 159.4/100 gives
+~175 GB, which is above the spec's 40–160 GB envelope. That rescale is wrong,
+because the figure it rescales is wrong.
+
+### The spec's formula double-counts by the basket size
+
+4.2 sizes the table as `positives × N`. But candidate generation happens once per
+**(customer, day)**, not once per positive: a customer who buys three articles on
+one day gets one candidate set, not three. Two independent confirmations —
+`train_ranker.sbatch` states "Groups for NDCG are (customer_id, day)", and the
+reduced-scale run that actually happened produced 2,091,944 rows for 20,000
+customers on **one day**, i.e. ~105 per customer-day.
+
+MEASURED on `local.raw.transactions` over the `train` slice (2018-09-20 ..
+2020-08-11):
+
+```
+positives  (distinct customer x article x day)          27,155,032
+scoring events (distinct customer x day)                 8,584,379
+mean basket                                                 3.1633
+```
+
+The positives figure reproduces the export's `n_train_rows` exactly, which is
+what makes the pair trustworthy. **`positives × N` therefore inflates the row
+count by 3.16×.**
+
+### The number
+
+```
+scoring events                                           8,584,379
+N candidates per scoring event                               159.4
+candidate rows                                       1,368,350,013
+x ~350 B/row (37 cols, 27 numeric + two 64-char ids)
+uncompressed                                              ~ 479 GB
+at parquet+zstd 8.6x                                     ~ 55.7 GB   (51.9 GiB)
+```
+
+**~55.7 GB compressed / ~479 GB uncompressed. VERDICT: FITS.**
+
+* **vs the spec's 40–160 GB envelope** — inside, with room at both ends.
+* **vs scratch** — 51.9 GiB against a 10,240 GiB group quota is **0.51%**. The
+  job that got quota-killed on 2026-08-18 was writing to **project**, a
+  different fileset; scratch has ~200× this table's headroom and 15M inodes
+  against ~6k used.
+* **Corollary: 4.2's own ~110 GB was 3.16× too high.** At N=100 the corrected
+  figure is 34.9 GB — *below* the envelope's 40 GB floor. The envelope was never
+  the binding constraint at either candidate depth.
+
+### What does NOT fit is the path, and that is a different bug
+
+`train_ranker.sbatch` passes `--out artifacts/ranker`, and `artifacts/` resolves
+under `PROJECT_ROOT` — on misha that is `~/marketrank`, i.e. **home: 106 of 125
+GiB used, ~19 GiB free**. 51.9 GiB does not fit there and neither does 32.5.
+
+`artifacts/ranker` itself only holds `model.txt`, `calibrator.pkl`,
+`metrics.json`, `reliability.png` — all small. The large object is step 1's
+Parquet spill-out of the filtered candidate table for LightGBM, and **its
+location is unspecified**, because `train_ranker.py` does not exist yet. This is
+the same defect that put the 27M-row export in home (see the `EXPORT out_dir`
+line in the 2303121 log): every default path in this repo is derived from
+`PROJECT_ROOT`, and `PROJECT_ROOT` is in the smallest filesystem on the machine.
+
+**Week 5 must route the candidate table to `$MARKETRANK_WAREHOUSE`'s filesystem
+(scratch) explicitly.** That is a one-line decision to make before writing the
+job, not a budget problem to solve by trimming candidates.
+
+### Inherited assumptions, not re-measured
+
+`~350 B/row` and the `8.6×` zstd ratio both come from 4.2, measured on the
+feature tables (36.5M rows → ~430 MB). Only the row count was re-derived here.
+If the ranker's feature width changes, this number moves linearly and the
+arithmetic above is the thing to re-run.
+
+`N = 159.4` is the mean over the `val_tune` cohort (min 62, max 217). It
+transfers to the training slice because both populations are customer-days with
+a purchase, but it is a mean over a different set of days.
+
+### Consequence for Rider 2
+
+Rider 2 — pricing a `category_pop` depth trim to `source_rank <= 20` — was gated
+on this coming back **doesn't fit**. It fits, with 3× headroom against the
+envelope's ceiling and 200× against the quota. **Rider 2 is not taken.** Trimming
+candidate depth to solve a problem that does not exist would cost measured
+ceiling (`category_pop` carries a 1.112% marginal) to buy storage that is free.
+The real fix is the output path.
