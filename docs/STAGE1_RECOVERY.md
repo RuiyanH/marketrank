@@ -296,6 +296,81 @@ rule): after the time-boxed week,
 **Checkpoint.** The decision, written in the README with its numbers, and week
 5 unblocked with a ceiling the ranker can live under.
 
+### DECISION (2026-08-20)
+
+**The rule says KEEP.** `ann` contributes **0.0546%** marginal ceiling per slot
+against the weakest heuristic source, `category_pop`, at **0.0363%** — third of
+five, ahead of `global_pop` too. Applied as written, before the numbers existed.
+
+**But keep the LAPTOP tower, not the GPU one.** R.4 is the rung that pays for
+this distinction:
+
+| tower | recall@100 | ann solo | ann marginal | union ceiling |
+|---|---|---|---|---|
+| `r2_recency` (laptop) | 6.659% | 4.156% | **1.578%** | **11.930%** |
+| `r4_scale_gpu` (full) | 6.748% | **4.214%** | 1.486% | 11.838% |
+
+The full-scale tower is better in isolation and worse in the ensemble. Its extra
+recall lands on pairs covisit and popularity already cover — `sources_per_candidate`
+rose 1.2017 → 1.2114, unique candidates fell. Both differences sit inside what
+training-seed noise (0.051 on recall@100) propagates, so these towers are
+**indistinguishable at the ceiling**, and the tie breaks on cost: one trains on
+a laptop in 14 minutes, the other needs a GPU allocation.
+
+### The 12% question, answered by measurement
+
+**Not cleared. 11.930% is the build's best, 0.070 points short.**
+
+| configuration | ceiling |
+|---|---|
+| three sources, pre-recovery | 7.475% |
+| + global_pop, covisit (R.5) | 10.777% |
+| + covisit depth 40/60 (R.5c) | 11.176% |
+| + covisit reach 60/50 (R.5d) | 11.761% |
+| + covisit reach 90/50 (R.5d) | **11.930%** |
+| + full-scale tower (R.4) | 11.838% |
+
+**Recommendation: proceed to week 5 at 11.930%**, and record the miss rather
+than chase it. Every remaining lever is either measured-exhausted or forbidden:
+
+* **Covisit bounds** — the next step returns less than the last (per added slot:
+  0.0579% then 0.0469%), and 120/50 projects to ~12.0%: touching the gate at the
+  worst efficiency yet measured, not clearing it comfortably.
+* **A bigger tower, more architecture, continued tuning** — explicitly not
+  permitted above, and R.4 is the evidence for why that clause was right.
+  Capacity is not the constraint.
+* **A recency half-life sweep at the full window** is the one genuinely untested
+  idea (widening the window and holding a 30-day half-life are in direct
+  tension — R.4 measured `ess_fraction` 0.138). It is **tuning past the box** and
+  is therefore out of scope here. Recorded as future work, not done.
+
+0.070 points is 0.6% relative on a gate that was itself a judgement call. The
+project's thesis is the decision layer and its evaluation, and that has now been
+waiting on a candidate set for a week.
+
+### Ship this configuration
+
+Five sources; covisit `lookback 90, max_basket 50, top_k 40, n 60`; `ann` from
+`r2_recency` at top-50; depths 30/40/40. Ceiling **11.930%** at **159.4
+candidates/customer**.
+
+**Carry that slot count into week 5 as a cost, not a footnote.** It is ~1.6×
+week 4's ~100 design point, and candidate count multiplies the ranker's training
+join — the ~110 GB zstd estimate assumed ~100. The ceiling was bought with
+slots, and week 5 pays for them again.
+
+### What R.4 bought
+
+Not a better tower. Three things worth more than one:
+
+1. **`ess_fraction`** — R.4 would have read as "9.4× the data changed nothing"
+   without it. It was 2.51×.
+2. **The overlap mechanism** — a source can improve solo and get worse at the
+   margin. That is the metric this step was designed around, now demonstrated
+   rather than argued.
+3. **The third loss/recall anti-correlation**, and that recall peaks at epoch 3
+   of 12 while loss improves throughout.
+
 ---
 
 ## Re-entry into IMPLEMENTATION.md
