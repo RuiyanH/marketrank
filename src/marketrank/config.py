@@ -6,6 +6,24 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_RAW = Path(os.environ.get("MARKETRANK_DATA_RAW", PROJECT_ROOT / "data" / "raw"))
 WAREHOUSE = Path(os.environ.get("MARKETRANK_WAREHOUSE", PROJECT_ROOT / "warehouse"))
 REPORTS = Path(os.environ.get("MARKETRANK_REPORTS", PROJECT_ROOT / "reports"))
+# BULK DERIVED TABLES -- week 4's candidate set and week 5's ranker training
+# frame. Split out from the other paths because they are the only outputs
+# measured in tens of GB: Rider 1 prices the training set at ~55.7 GB compressed
+# / ~479 GB uncompressed at the shipped 159.4-candidate budget.
+#
+# Every other path here derives from PROJECT_ROOT, and on misha PROJECT_ROOT is
+# $HOME -- the SMALLEST filesystem on that machine (125 GiB quota, ~19 GiB free)
+# and the only one with no room for either number. That is not hypothetical: the
+# 27M-row two-tower export landed there (`EXPORT out_dir .../marketrank/
+# artifacts/twotower` in job 2303121), and a project-fileset write was already
+# killed by quota on 2026-08-18. Default keeps the laptop's behaviour; misha
+# points this at scratch via env.misha.sh.
+#
+# NOTE: nothing reads this yet -- it is introduced ahead of week 5's candidate
+# job (C1), whose output is the first thing that would otherwise land in $HOME.
+# Stated because "plumbed and inert" is a bug class this build keeps finding;
+# unlike a model hyperparameter it cannot raise on use, so it is flagged here.
+TABLES = Path(os.environ.get("MARKETRANK_TABLES", PROJECT_ROOT / "artifacts" / "tables"))
 # Where Spark spills. Overridable so misha can point it at node-local /tmp
 # (SETUP_MISHA Phase 3b -- GPFS handles small-file shuffle churn badly) while
 # the laptop keeps it inside the repo. Left unset entirely, Spark spills to the

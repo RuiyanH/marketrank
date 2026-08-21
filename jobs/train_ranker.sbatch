@@ -53,6 +53,7 @@ echo "git commit     : $(git rev-parse --short HEAD)"
 _tracked="$(git status --porcelain --untracked-files=no | tr '\n' ';' | sed 's/;$//' || true)"
 echo "tracked mods   : ${_tracked:-none}"
 echo "neg sample rate: ${NEG_SAMPLE_RATE}"
+echo "bulk tables    : $(python -c 'from marketrank import config; print(config.TABLES)')"
 echo "started        : $(date -Is)"
 echo "====================================================================="
 
@@ -72,6 +73,12 @@ echo "finished       : $(date -Is)"
 #      and writes it out as Parquet for LightGBM. Spark is only the reader here
 #      -- Iceberg is not a format LightGBM speaks. Stop the session before
 #      training so the JVM is not holding heap while LightGBM allocates.
+#
+#      THAT PARQUET GOES UNDER `config.TABLES`, NOT `artifacts/`. It is ~55.7 GB
+#      compressed at the shipped 159.4-candidate budget (Rider 1), and
+#      `artifacts/` resolves under PROJECT_ROOT = $HOME on misha, which has ~19
+#      GiB free. `--out artifacts/ranker` below is correct for what it holds --
+#      model.txt, calibrator.pkl, metrics.json, reliability.png -- all small.
 #
 #   2. Train LightGBM with objective=binary. NOT lambdarank: the decision layer
 #      multiplies p̂ by price and treats it as expected revenue, so the score
