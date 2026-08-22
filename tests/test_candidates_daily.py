@@ -23,6 +23,7 @@ Each test below is written so that the OBVIOUS wrong implementation fails it:
 import datetime as dt
 
 import pytest
+from pyspark.sql import functions as F
 
 from marketrank import candidates_daily as CD, features as ft, ingest
 
@@ -223,3 +224,140 @@ def test_covisit_anchor_never_moves_forward_in_time():
             assert anchor <= day, f"anchor {anchor} is after day {day}"
             assert anchor % cadence == 0
             assert day - anchor < cadence, "staleness must be bounded by the cadence"
+
+
+# ---------------------------------------------------------------------------
+# EQUIVALENCE. The hand-built tests above pin the PIT boundaries; these pin the
+# property the checksum actually depends on -- that restricting the per-day
+# machinery to one day reproduces the single-day source it replaces, EXACTLY,
+# including ranks. If these hold on a synthetic set they are the same assertions
+# `--checksum-day` makes on the real one, minus 692 days of compute.
+#
+# The covisit case is here because it already caught a real bug: the first
+# version of `daily_covisit` deduplicated seeds by article, while
+# `_recent_events` ranks distinct (article, day) EVENTS -- so an article bought
+# on three days carries 1/1 + 1/2 + 1/3 of seed weight, not 1.0. Same shape,
+# same columns, different scores.
+# ---------------------------------------------------------------------------
+
+_AS_OF_DAY = 40
+
+
+def _rich_history():
+    """Repeat buyers, multiple categories, purchases on and around the boundary."""
+    rows = []
+    for cust, arts in (
+        ("c1", [("A", 1), ("A", 5), ("A", 9), ("B", 12), ("C", 30)]),
+        ("c2", [("A", 2), ("B", 2), ("B", 20), ("D", 35)]),
+        ("c3", [("C", 3), ("D", 4), ("E", 33), ("E", 38)]),
+        ("c4", [("A", 39), ("E", 39)]),
+        ("c5", [("F", 7)]),
+    ):
+        for a, d in arts:
+            rows.append((cust, a, _day(d)))
+    # Transactions ON the as-of day: must be invisible to every source.
+    rows += [("c1", "G", _day(_AS_OF_DAY)), ("c2", "G", _day(_AS_OF_DAY))]
+    return rows
+
+
+def _events_on_as_of(spark, customers):
+    from pyspark.sql.types import IntegerType, StringType, StructField, StructType
+
+    schema = StructType(
+        [
+            StructField("customer_id", StringType(), False),
+            StructField("day_index", IntegerType(), False),
+        ]
+    )
+    return spark.createDataFrame([(c, _AS_OF_DAY) for c in customers], schema)
+
+
+def _triples(df):
+    return sorted(
+        (r.customer_id, r.article_id, r.source_rank)
+        for r in df.select("customer_id", "article_id", "source_rank").collect()
+    )
+
+
+@pytest.mark.spark
+def test_daily_repurchase_equals_the_single_day_source(spark, patched):
+    from marketrank import candidates as C
+
+    patched(_rich_history())
+    custs = ["c1", "c2", "c3", "c4", "c5"]
+    events = _events_on_as_of(spark, custs)
+
+    daily = CD.daily_repurchase(spark, events, n=30).filter(
+        f"day_index = {_AS_OF_DAY}"
+    )
+    single = C.repurchase_source(spark, _day(_AS_OF_DAY), n=30).filter(
+        F.col("customer_id").isin(custs)
+    )
+    assert _triples(daily) == _triples(single)
+
+
+@pytest.mark.spark
+def test_daily_global_pop_equals_the_single_day_source(spark, patched):
+    from marketrank import candidates as C
+
+    patched(_rich_history())
+    daily = CD.daily_global_pop(spark, n=5, lookback_days=30).filter(
+        f"day_index = {_AS_OF_DAY}"
+    )
+    single = C.global_popularity_source(spark, _day(_AS_OF_DAY), n=5, lookback_days=30)
+
+    got = sorted((r.article_id, r.source_rank) for r in daily.collect())
+    want = sorted((r.article_id, r.source_rank) for r in single.collect())
+    assert got == want
+
+
+@pytest.mark.spark
+def test_daily_category_pop_equals_the_single_day_source(spark, patched):
+    from marketrank import candidates as C
+
+    arts = [("A", 7), ("B", 7), ("C", 9), ("D", 9), ("E", 9), ("F", 11), ("G", 11)]
+    patched(_rich_history(), arts)
+    custs = ["c1", "c2", "c3", "c4", "c5"]
+    events = _events_on_as_of(spark, custs)
+
+    dom = CD.daily_dominant_category(spark, events)
+    pop = CD.daily_category_pop(spark, n=5, lookback_days=30)
+    daily = dom.join(pop, ["day_index", "product_type_no"], "inner").filter(
+        f"day_index = {_AS_OF_DAY}"
+    )
+    single = C.category_popularity_source(
+        spark, _day(_AS_OF_DAY), n=5, lookback_days=30
+    ).filter(F.col("customer_id").isin(custs))
+    assert _triples(daily) == _triples(single)
+
+
+@pytest.mark.spark
+def test_daily_covisit_equals_the_single_day_source(spark, patched):
+    """
+    The regression test for the seed-dedup bug. `c1` and `c3` both buy the same
+    article on several days, which is exactly the case the collapsed version got
+    wrong -- and it is invisible in the output shape.
+    """
+    from marketrank import covisit
+
+    patched(_rich_history())
+    custs = ["c1", "c2", "c3", "c4", "c5"]
+    events = _events_on_as_of(spark, custs)
+    as_of = _day(_AS_OF_DAY)
+
+    pairs = covisit.covisit_pairs(
+        spark, as_of, lookback_days=90, window_days=7, top_k=40, max_basket=50
+    )
+    customers = events.select("customer_id").distinct()
+
+    single = covisit.covisit_source(
+        spark, as_of, customers=customers, n=40, recent_k=10,
+        lookback_days=90, max_basket=50, pairs=pairs,
+    )
+    daily = CD.daily_covisit(
+        spark, events,
+        pairs.withColumn("anchor_day", F.lit(_AS_OF_DAY)),
+        n=40, recent_k=10, lookback_days=90, max_basket=50, cadence_days=1,
+    ).filter(f"day_index = {_AS_OF_DAY}")
+
+    assert _triples(daily) == _triples(single)

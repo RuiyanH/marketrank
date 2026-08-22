@@ -320,10 +320,20 @@ def daily_covisit(
             F.col("p.day_index").alias("seed_day"),
         )
     )
+    # DO NOT DEDUPLICATE BY ARTICLE. `covisit._recent_events` ranks distinct
+    # (customer, article, day) EVENTS, so an article bought on three days
+    # occupies three seed slots and contributes 1/1 + 1/2 + 1/3 = 1.833 of seed
+    # weight, not 1.0. Its docstring is explicit that this is intended --
+    # "repeat purchases are signal here" -- and collapsing to one row per
+    # article silently changes every covisit score, hence the top-n, hence the
+    # solo coverage. Same ordering key as the single-day version, so `r` (and
+    # therefore `seed_w`) match it row for row.
+    #
+    # One row_number covers both caps: `_recent_events` applies `max_basket`
+    # and `covisit_source` then applies `recent_k` over the SAME ordering, so
+    # ranks agree and filtering to min(recent_k, max_basket) is equivalent.
     seeds = (
-        seeds.groupBy("customer_id", "day_index", "article_id")
-        .agg(F.max("seed_day").alias("seed_day"))
-        .withColumn(
+        seeds.withColumn(
             "r",
             F.row_number().over(
                 Window.partitionBy("customer_id", "day_index").orderBy(
@@ -331,7 +341,7 @@ def daily_covisit(
                 )
             ),
         )
-        .filter(F.col("r") <= recent_k)
+        .filter(F.col("r") <= min(recent_k, max_basket))
         .withColumn("seed_w", F.lit(1.0) / F.col("r"))
     )
 
