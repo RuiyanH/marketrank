@@ -2665,3 +2665,36 @@ measurement is still owed.
 
 The ceiling the ranker lives under is 11.930%. The binding constraint on stage 1
 is no longer the candidate set — it is the ranker, which does not exist yet.
+
+### B2 — where the shipped artifacts live
+
+Everything R.6 ships was computed on misha under `$HOME/scratch`, which is
+**purged after 60 days**, except `r2_recency` itself, which was trained on a
+laptop and never copied to the cluster. Homes as of this commit:
+
+| artifact | home | size |
+|---|---|---|
+| `runs/r2_recency/model.pt` | **git** (+ laptop) | 26 MB |
+| `runs/r2_recency/ann_candidates.parquet` | **git** (+ laptop, misha) | 3.5 MB |
+| `runs/r2_recency/metrics.json` | **git** | 4 KB |
+| `candidates_misha_90_50/sources/covisit.parquet` | **git** (+ laptop, misha-scratch) | 3.3 MB, 17 parts |
+| `candidates_misha_90_50/sources/*.meta.json` | **git** | 4 KB each |
+| `candidates_misha_90_50/ceiling.json` | **git** | 4 KB |
+
+Tracked by **exact path**, not by pattern: `!artifacts/**/*.parquet` would sweep
+in every source parquet of every run plus the 56 MB two-tower export. The hidden
+`.crc` siblings are Hadoop checksums, regenerated on read, and are excluded.
+
+**Verified, not assumed** — 17 of 17 parquet parts staged with none ignored (a
+missed part would restore a silently truncated dataset), and the tracked files
+re-read to 871,251 covisit rows against the sidecar's 871,251, and 1,000,000 ANN
+rows.
+
+What this buys: the two parquets re-derive the shipped **11.930%** ceiling with
+no cluster access, and `model.pt` is what week 6's serving path loads. Before
+this commit `model.pt` was a single copy on one laptop at 93% disk.
+
+Not preserved, deliberately: the other four source parquets of the 90/50 run
+(re-derivable from the warehouse via `candidate_ceiling`), the two-tower export
+(re-derivable via `build_export.sbatch`), and `r4_scale_gpu`'s model — which is
+measured, recorded, and **not shipped**.

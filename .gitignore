@@ -56,6 +56,24 @@ artifacts/**
 # 3 of 12 -- exist nowhere else. A few KB each.
 !artifacts/**/metrics.json
 
+# THE SHIPPED ARTIFACTS (R.6, B2). Three binaries, ~33 MB, tracked by exact path
+# rather than by pattern -- everything else under artifacts/ stays ignored.
+#
+# These were computed on misha under $HOME/scratch, which is PURGED AFTER 60
+# DAYS, and `r2_recency` was trained on a laptop and never copied to the
+# cluster, so before this commit `model.pt` existed as a single copy on one
+# machine. Together the two parquets re-derive the shipped 11.930% ceiling
+# without touching a cluster; model.pt is what week 6's serving path loads.
+#
+# Not tracked by `*.parquet`: that would sweep in every source parquet of every
+# run plus the 56 MB two-tower export. Deliberately narrow.
+!artifacts/twotower/runs/r2_recency/model.pt
+!artifacts/twotower/runs/r2_recency/ann_candidates.parquet
+# Spark writes a DIRECTORY here (18 parts). The hidden .crc siblings are Hadoop
+# checksums, regenerated on read -- excluded by matching only *.parquet.
+!artifacts/candidates_misha_90_50/sources/covisit.parquet/*.parquet
+!artifacts/candidates_misha_90_50/sources/covisit.parquet/_SUCCESS
+
 # Job logs. sbatch writes logs/%x-%j.out here and the local runner does the
 # same. The directory must EXIST before submit (`mkdir -p logs`), but nothing
 # inside it is source.
