@@ -361,3 +361,66 @@ def test_daily_covisit_equals_the_single_day_source(spark, patched):
     ).filter(f"day_index = {_AS_OF_DAY}")
 
     assert _triples(daily) == _triples(single)
+
+
+# ---------------------------------------------------------------------------
+# ANCHOR GRID. The phase is not cosmetic: on a DAY_ZERO-phased grid the checksum
+# day is six days stale, so `--checksum-day` cannot reproduce covisit's 4.805%
+# solo and the whole checksum fails for a reason unrelated to correctness.
+# ---------------------------------------------------------------------------
+
+
+def _anchor(spark, day, cadence, phase):
+    return (
+        spark.range(1)
+        .select(CD.covisit_anchor_day(F.lit(day), cadence, phase).alias("a"))
+        .collect()[0]
+        .a
+    )
+
+
+@pytest.mark.spark
+def test_checksum_day_lands_on_a_fresh_anchor(spark):
+    """The eval day must read a table built as of itself, not up to 6 days old."""
+    phase = CD.covisit_phase(spark)
+    assert _anchor(spark, phase, 7, phase) == phase
+
+    # And this documents WHY the phase exists: the epoch-phased grid is stale
+    # exactly here. If this assertion ever starts failing, the shipped ceiling
+    # and the checksum have drifted apart and one of them is wrong.
+    epoch_phased = _anchor(spark, phase, 7, 0)
+    assert epoch_phased < phase, (
+        "DAY_ZERO phasing happens to be fresh on the eval day; the phase "
+        "argument may no longer be load-bearing -- re-check the checksum"
+    )
+
+
+@pytest.mark.spark
+def test_anchor_is_never_in_the_future(spark):
+    """
+    Conservatism is the safety property. An anchor after the scoring day would
+    score it with a pair table built from data it cannot legally see -- a leak.
+    Rounding to nearest, rather than flooring, does exactly that.
+    """
+    phase = CD.covisit_phase(spark)
+    for d in (phase - 13, phase - 7, phase - 6, phase - 1, phase, phase + 1, phase + 6):
+        a = _anchor(spark, d, 7, phase)
+        assert a <= d, f"anchor {a} is after scoring day {d}"
+        assert d - a < 7, f"anchor {a} is more than a cadence behind day {d}"
+        assert (a - phase) % 7 == 0, f"anchor {a} is off the phased grid"
+
+
+@pytest.mark.spark
+def test_anchor_days_for_matches_the_scorer_expression(spark):
+    """
+    The pairs job and the scorer must agree structurally, not numerically.
+
+    A disagreement here does not raise: the scorer's join simply misses, covisit
+    contributes nothing for those days, and the ceiling quietly drops.
+    """
+    phase = CD.covisit_phase(spark)
+    lo, hi = phase - 20, phase + 3
+    got = CD.anchor_days_for(spark, lo, hi, 7, phase)
+    want = sorted({_anchor(spark, d, 7, phase) for d in range(lo, hi + 1)})
+    assert got == want
+    assert all(a <= hi for a in got)
