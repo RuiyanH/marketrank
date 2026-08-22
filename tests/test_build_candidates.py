@@ -125,3 +125,56 @@ def test_shipped_reference_is_present_and_has_every_source():
     assert abs(ceiling["recall_ceiling"] - 0.11929576468924556) < 1e-12
     for name in BC.SOURCE_ORDER:
         assert f"by_{name}" in ceiling, f"reference has no solo for {name}"
+
+
+# ---------------------------------------------------------------------------
+# Chunking. Cost knob, not a correctness knob -- but it decides which days each
+# chunk covers, and a gap or an overlap there is silent: days would simply be
+# missing from the table, or written twice under different anchors.
+# ---------------------------------------------------------------------------
+def test_chunks_cover_every_day_exactly_once():
+    anchors = list(range(90, 692, 7))
+    chunks = BC.chunks_for(anchors, 7, 90, 691, 4)
+    covered = [d for c in chunks for d in range(c["lo"], c["hi"] + 1)]
+    assert covered == sorted(covered), "chunks are out of order"
+    assert len(covered) == len(set(covered)), "a day is written by two chunks"
+    assert set(covered) == set(range(90, 692)), "a day is missing from every chunk"
+
+
+def test_chunk_days_only_use_anchors_the_chunk_reads():
+    """
+    A day whose anchor is not in its chunk would join against nothing and lose
+    covisit entirely -- no error, just a source silently contributing zero.
+    """
+    anchors = list(range(90, 692, 7))
+    for c in BC.chunks_for(anchors, 7, 90, 691, 4):
+        for d in range(c["lo"], c["hi"] + 1):
+            anchor = ((d - 692) // 7) * 7 + 692
+            assert anchor in c["anchors"], f"day {d} needs anchor {anchor}"
+
+
+def test_chunk_width_changes_grouping_not_coverage():
+    """Width is a cost knob: every width must cover the same days."""
+    anchors = list(range(90, 692, 7))
+    cover = {
+        w: sorted(d for c in BC.chunks_for(anchors, 7, 90, 691, w)
+                  for d in range(c["lo"], c["hi"] + 1))
+        for w in (1, 2, 4, 13)
+    }
+    assert len({tuple(v) for v in cover.values()}) == 1
+    assert len(BC.chunks_for(anchors, 7, 90, 691, 1)) > len(
+        BC.chunks_for(anchors, 7, 90, 691, 4)
+    )
+
+
+def test_chunk_content_args_exclude_the_cost_knobs():
+    """
+    `chunk_weeks` and `cadence` decide which chunks exist, not what a day
+    contains. Including them would force a full rebuild every time the width is
+    tuned, for no changed row -- the same reasoning as the pairs job.
+    """
+    assert "chunk_weeks" not in BC.CHUNK_CONTENT_ARGS
+    assert "cadence" not in BC.CHUNK_CONTENT_ARGS
+    for k in ("n_repurchase", "n_category", "n_global_pop", "n_covisit",
+              "covisit_lookback", "covisit_max_basket", "recent_k"):
+        assert k in BC.CHUNK_CONTENT_ARGS, f"{k} changes content but is not compared"
