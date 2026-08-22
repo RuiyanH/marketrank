@@ -2698,3 +2698,55 @@ Not preserved, deliberately: the other four source parquets of the 90/50 run
 (re-derivable from the warehouse via `candidate_ceiling`), the two-tower export
 (re-derivable via `build_export.sbatch`), and `r4_scale_gpu`'s model — which is
 measured, recorded, and **not shipped**.
+
+---
+
+## Step C1 — Candidate generation at ranker scale
+
+### Repurchase fan-out: sized before choosing, and the prior did not hold
+
+`daily_repurchase` reads the customer's whole prior history with no lookback
+bound, matching `baselines.repurchase_ranks` -- a bound would break exactness,
+because an inactive customer's top-30 can be years old. That makes it the widest
+join in the job. Two forms were available:
+
+* **naive** -- join events to prior transactions at customer level, filter
+  `p.day < e.day`, then `groupBy(customer, day, article)` for `last_day` and
+  `n_bought`. Intermediate `Σ E_c × T_c`.
+* **array** -- pre-group prior by `(customer, article)` into a sorted day list,
+  join at customer level, and compute both aggregates per row with
+  `filter(days, x -> x < d)`. Intermediate `Σ E_c × A_c`, no groupBy shuffle.
+
+MEASURED on the `train` slice, 1,330,267 customers and 8,584,379 events:
+
+```
+naive        Σ E_c × T_c     584,844,303      max one customer   505,682
+array        Σ E_c × A_c     489,107,151      max one customer   358,898
+article-day  Σ E_c × AD_c    522,225,813
+ratio                              1.20x
+```
+
+**The array form is 20% smaller, not several-fold**, and the absolute number is
+~585M rather than the billions the shape suggested. The reason is this dataset:
+`T_c / A_c ≈ 1.2`, so customers buy many distinct articles and rarely repeat the
+same one. The repeat-buyer tail that would make `A_c << T_c` is not there --
+`article_day` landing between the two confirms it, since most repeats are
+same-article-different-day.
+
+A subtlety that cuts against the array form: the naive `p.day < e.day` is an
+inequality and cannot be a join key, so it filters AFTER the join (585M
+intermediate) -- but the array form joins every `(customer, article)` pair
+whether or not any purchase precedes `d`, so it cannot drop rows pre-join
+either (489M). The genuine difference is one shuffle, not row count.
+
+**DECISION: keep the naive form.** 585M is modest, skew is mild (the worst
+customer is 0.09% of the total), and the naive version is already
+equivalence-tested against `repurchase_ranks`. Buying 16% fewer rows and one
+shuffle by switching to higher-order array functions would mean re-establishing
+that exactness. If C1's first run shows this stage dominating wall clock, the
+array form is the known fix and the equivalence tests are already in place to
+validate it -- that is a measurement worth acting on, unlike a prediction.
+
+`spark.sql.adaptive.skewJoin.enabled` is set explicitly by the job regardless.
+It handles partition imbalance, not total row count, so it is insurance rather
+than the answer.
