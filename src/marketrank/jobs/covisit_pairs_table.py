@@ -44,11 +44,10 @@ that mode is exactly the failure being designed against. Each anchor is its own
 from __future__ import annotations
 
 import argparse
-import json
 import time
 from pathlib import Path
 
-from marketrank import candidates_daily as CD, config, covisit, splits
+from marketrank import candidates_daily as CD, config, covisit, partitions as PT, splits
 
 # Args that change the CONTENT of a given anchor's pair table. `cadence` and
 # `phase` are deliberately NOT here: they decide WHICH anchors exist, not what
@@ -58,48 +57,26 @@ from marketrank import candidates_daily as CD, config, covisit, splits
 CONTENT_ARGS = ("lookback_days", "max_basket", "top_k", "window_days")
 
 
-def _meta_dir(out: Path) -> Path:
-    """`_meta` because Spark's file listing skips `_`-prefixed entries.
-
-    A stray `meta.json` beside the `anchor_day=N` directories would be picked up
-    by partition discovery and fail the read as non-parquet.
-    """
-    return out / "_meta"
+# Thin, named wrappers over the shared implementation in `partitions.py`. The
+# restart semantics live there so this job and `build_candidates` cannot drift
+# into two different answers for "is this partition safe to reuse".
+KEY = "anchor_day"
 
 
 def anchor_path(out: Path, anchor: int) -> Path:
-    """Hive-style, so reading the parent recovers `anchor_day` as a column."""
-    return out / f"anchor_day={int(anchor)}"
+    return PT.part_path(out, KEY, int(anchor))
 
 
 def anchor_meta_path(out: Path, anchor: int) -> Path:
-    return _meta_dir(out) / f"anchor_day={int(anchor)}.json"
+    return PT.part_meta_path(out, KEY, int(anchor))
 
 
 def read_anchor_meta(out: Path, anchor: int) -> dict | None:
-    p = anchor_meta_path(out, anchor)
-    if not p.exists():
-        return None
-    try:
-        return json.loads(p.read_text())
-    except json.JSONDecodeError:
-        # A meta truncated by a kill is not a valid skip signal.
-        return None
+    return PT.read_part_meta(out, KEY, int(anchor))
 
 
 def anchor_state(out: Path, anchor: int, args: dict) -> str:
-    """`missing` | `partial` | `mismatch` | `ok` -- the three questions above."""
-    path = anchor_path(out, anchor)
-    if not path.exists():
-        return "missing"
-    if not (path / "_SUCCESS").exists():
-        return "partial"
-    meta = read_anchor_meta(out, anchor)
-    if meta is None:
-        return "partial"
-    if any(meta.get("args", {}).get(k) != args[k] for k in CONTENT_ARGS):
-        return "mismatch"
-    return "ok"
+    return PT.part_state(out, KEY, int(anchor), args, CONTENT_ARGS)
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -142,25 +119,14 @@ def main(argv=None) -> dict:
     print(f"DAYS  {lo}..{hi}   CADENCE {a.cadence}   ANCHORS {len(anchors)}")
     print(f"OUT   {out}")
 
-    states = {x: anchor_state(out, x, content) for x in anchors}
-    mismatched = [x for x, st in states.items() if st == "mismatch"]
-    if mismatched and not a.force:
-        raise SystemExit(
-            f"{len(mismatched)} anchor(s) exist with DIFFERENT derivation args: "
-            f"{mismatched[:10]}{'...' if len(mismatched) > 10 else ''}\n"
-            "These are valid data from another configuration, not garbage. "
-            "Re-run with --force to overwrite, or point --out elsewhere."
-        )
-
-    # Everything not `ok` is rebuilt. Mismatches only survive to this line under
-    # --force, because the check above aborts on them otherwise.
-    todo = [x for x, st in states.items() if st != "ok"]
+    todo, states = PT.plan(out, KEY, anchors, content, CONTENT_ARGS, force=a.force)
+    mismatched = [x for x, st in states.items() if st == PT.MISMATCH]
     skipped = len(anchors) - len(todo)
     print(f"STATE ok={skipped} todo={len(todo)} "
           f"(partial={sum(1 for s in states.values() if s == 'partial')}, "
           f"mismatch={len(mismatched)})")
 
-    _meta_dir(out).mkdir(parents=True, exist_ok=True)
+    PT.meta_dir(out).mkdir(parents=True, exist_ok=True)
     for i, anchor in enumerate(todo, 1):
         t0 = time.time()
         pairs = CD.weekly_covisit_pairs(
@@ -175,29 +141,26 @@ def main(argv=None) -> dict:
 
         # AFTER the write commits, never before: this file is what a restart
         # trusts, so it must not exist for a partition that does not.
-        anchor_meta_path(out, anchor).write_text(json.dumps({
+        PT.write_part_meta(out, KEY, int(anchor), {
             "anchor_day": int(anchor),
             "rows": int(n_rows),
             "args": content,
             "cadence": a.cadence,
             "phase": phase,
             "seconds": round(time.time() - t0, 1),
-        }, indent=2))
+        })
         print(f"ANCHOR {anchor:>5}  rows {n_rows:>9}  "
               f"{time.time() - t0:6.1f}s  [{i}/{len(todo)}]")
 
     # RUN SIDECAR, derived from disk rather than accumulated in memory.
-    metas = {x: read_anchor_meta(out, x) for x in anchors}
-    missing = [x for x, m in metas.items() if m is None]
-    run = {
+    run = PT.derive_run_meta(out, KEY, anchors, extra={
         "day_range": [lo, hi],
         "warm_up_days": CD.WARM_UP_DAYS,
         "warm_up_reason": (
             "Days before the longest lookback (90) have a truncated window in "
             "every source -- 30-day popularity, as-of repurchase, 90-day "
             "covisit -- so their candidate sets are degenerate rather than "
-            "wrong. Excluded by default; generating the complete grid is a "
-            "flagged run, not the default."
+            "wrong. Excluded by default; the complete grid is a flagged run."
         ),
         "cadence": a.cadence,
         "phase": phase,
@@ -207,13 +170,9 @@ def main(argv=None) -> dict:
             "not reproduce the shipped covisit solo."
         ),
         "args": content,
-        "anchors": [int(x) for x in anchors],
-        "n_anchors": len(anchors),
-        "total_rows": sum(m["rows"] for m in metas.values() if m),
-        "incomplete_anchors": missing,
-    }
-    (_meta_dir(out) / "run.json").write_text(json.dumps(run, indent=2))
-    print(f"WROTE {_meta_dir(out) / 'run.json'}")
+    })
+    missing = run["incomplete"]
+    print(f"WROTE {PT.meta_dir(out) / 'run.json'}")
     print(f"TOTAL anchors {len(anchors)}  rows {run['total_rows']}  "
           f"incomplete {len(missing)}")
     if missing:

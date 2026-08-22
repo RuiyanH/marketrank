@@ -31,7 +31,7 @@ from pathlib import Path
 
 from pyspark.sql import DataFrame, SparkSession, functions as F
 
-from marketrank import candidates as C, candidates_daily as CD, config, splits
+from marketrank import candidates as C, candidates_daily as CD, config
 from marketrank.retrieval import baselines as B
 
 SHIPPED_CEILING = Path("artifacts/candidates_misha_90_50/ceiling.json")
